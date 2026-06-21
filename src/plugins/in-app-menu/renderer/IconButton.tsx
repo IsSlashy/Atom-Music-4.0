@@ -33,6 +33,11 @@ const iconButton = cacheNoArgs(
     &:active {
       scale: 0.9;
     }
+
+    &:focus-visible {
+      outline: 2px solid #3ea6ff;
+      outline-offset: 2px;
+    }
   `,
 );
 

@@ -45,6 +45,11 @@ const inputStyle = cacheNoArgs(
     &:focus {
       border-color: rgba(255, 255, 255, 0.3);
     }
+
+    &:focus-visible {
+      outline: 2px solid #3ea6ff;
+      outline-offset: 1px;
+    }
   `,
 );
 
@@ -64,6 +69,11 @@ const sliderStyle = cacheNoArgs(
     background: rgba(255, 255, 255, 0.2);
     border-radius: 2px;
     outline: none;
+
+    &:focus-visible {
+      outline: 2px solid #3ea6ff;
+      outline-offset: 2px;
+    }
 
     &::-webkit-slider-thumb {
       -webkit-appearance: none;

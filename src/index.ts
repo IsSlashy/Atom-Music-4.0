@@ -266,7 +266,16 @@ ipcMain.handle('ytmd:delete-download', (_, filePath: string) => {
   }
 });
 
-const initHook = async (win: BrowserWindow) => {
+let hooksInstalled = false;
+
+const initHook = async (_win: BrowserWindow) => {
+  // These registrations are process-global (IPC handlers + a single config
+  // watcher), so they must run only once. createMainWindow() is called again on
+  // macOS `activate`; re-running this previously threw ("second handler for
+  // 'ytmd:set-config'") and leaked a config.watch listener every time.
+  if (hooksInstalled) return;
+  hooksInstalled = true;
+
   const allPluginStubs = await allPlugins();
 
   ipcMain.handle(
@@ -315,15 +324,18 @@ const initHook = async (win: BrowserWindow) => {
           newPluginConfig ?? {},
         ) as PluginConfig;
 
+        // Always target the current live window (it may have been recreated).
+        const targetWindow = mainWindow;
+
         if (config.enabled !== oldConfig?.enabled) {
           if (config.enabled) {
-            win.webContents.send('plugin:enable', id);
+            targetWindow?.webContents.send('plugin:enable', id);
             ipcMain.emit('plugin:enable', id);
-            forceLoadMainPlugin(id, win);
+            if (targetWindow) forceLoadMainPlugin(id, targetWindow);
           } else {
-            win.webContents.send('plugin:unload', id);
+            targetWindow?.webContents.send('plugin:unload', id);
             ipcMain.emit('plugin:unload', id);
-            forceUnloadMainPlugin(id, win);
+            if (targetWindow) forceUnloadMainPlugin(id, targetWindow);
           }
 
           if (allPluginStubs[id]?.restartNeeded) {
@@ -341,7 +353,7 @@ const initHook = async (win: BrowserWindow) => {
           }
         }
 
-        win.webContents.send('config-changed', id, config);
+        targetWindow?.webContents.send('config-changed', id, config);
       }
     });
   });

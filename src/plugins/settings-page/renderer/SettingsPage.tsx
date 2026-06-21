@@ -121,6 +121,11 @@ const searchStyle = cacheNoArgs(
       border-color: rgba(255, 255, 255, 0.3);
     }
 
+    &:focus-visible {
+      outline: 2px solid #3ea6ff;
+      outline-offset: 1px;
+    }
+
     &::placeholder {
       color: rgba(255, 255, 255, 0.4);
     }

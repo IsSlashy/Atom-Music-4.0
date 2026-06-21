@@ -842,16 +842,6 @@ function replaceNavIcons() {
             (window as any).__ytmdLocalCleanup = cleanup;
     };
 
-    // Global handler: play a local file from the side panel
-    document.addEventListener('ytmd-play-local', (e: Event) => {
-      const f = (e as CustomEvent).detail;
-      if (!f?.path) return;
-      // Use the shared playback function
-      if ((window as any).__ytmdPlayLocalFile) {
-        (window as any).__ytmdPlayLocalFile(f);
-      }
-    });
-
     miniGuideItems.appendChild(playlistsEntry);
     miniGuideItems.appendChild(downloadsEntry);
   };
@@ -938,11 +928,35 @@ function replaceNavIcons() {
         contentObserver.observe(contentPage, { childList: true, subtree: true });
       }
 
-      // Continuously enforce collapse (YouTube Music may try to expand)
-      setInterval(forceCollapse, 250);
+      // Safety net only: the guideObserver above already re-collapses on every
+      // mutation. This low-frequency interval just catches anything it misses,
+      // and does nothing while the sidebar is already collapsed (no per-tick
+      // DOM thrashing like the previous unconditional 250ms loop).
+      setInterval(() => {
+        const layout = document.querySelector('ytmusic-app-layout');
+        const collapsed =
+          document.body.classList.contains('ytmd-sidebar-collapsed') &&
+          (!layout || layout.hasAttribute('guide-collapsed'));
+        if (!collapsed) forceCollapse();
+      }, 1000);
 
     }
   };
+
+  // Bind the local-file play handler exactly once. addCustomEntries() can run
+  // repeatedly when Polymer re-creates the sidebar, which previously stacked a
+  // duplicate 'ytmd-play-local' listener on each re-injection.
+  if (!(window as any).__ytmdLocalPlayBound) {
+    (window as any).__ytmdLocalPlayBound = true;
+    document.addEventListener('ytmd-play-local', (e: Event) => {
+      const f = (e as CustomEvent).detail;
+      if (!f?.path) return;
+      if ((window as any).__ytmdPlayLocalFile) {
+        (window as any).__ytmdPlayLocalFile(f);
+      }
+    });
+  }
+
   setTimeout(initialApply, 1000);
 
   // Fix ghost song-media-window: collapse when player enters mini mode.
