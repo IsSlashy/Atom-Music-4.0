@@ -1,5 +1,3 @@
-import { deepmerge } from 'deepmerge-ts';
-
 import { rendererPlugins } from 'virtual:plugins';
 
 import { LoggerPrefix, startPlugin, stopPlugin } from '@/utils';

@@ -92,7 +92,7 @@ tp-yt-paper-item.ytmusic-guide-entry-renderer::before {
 
 tp-yt-iron-dropdown,
 tp-yt-paper-dialog {
-  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }
 
 /* Liquid glass player bar */

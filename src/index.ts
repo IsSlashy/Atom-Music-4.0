@@ -150,11 +150,34 @@ if (is.dev()) {
   });
 }
 
-let icon = 'assets/youtube-music.png';
+// Resolve an asset path that works both in dev (cwd = project root) and in the
+// packaged app (assets are asar-unpacked under resources/). Returns the first
+// candidate that actually exists, so the window/taskbar icon never silently
+// falls back to a missing file on Windows.
+const resolveAsset = (relativePath: string): string => {
+  const candidates = [
+    process.resourcesPath
+      ? path.join(process.resourcesPath, 'app.asar.unpacked', relativePath)
+      : '',
+    process.resourcesPath ? path.join(process.resourcesPath, relativePath) : '',
+    path.join(app.getAppPath(), relativePath),
+    path.join(process.cwd(), relativePath),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      /* ignore */
+    }
+  }
+  return relativePath;
+};
+
+let icon = resolveAsset('assets/youtube-music.png');
 if (process.platform === 'win32') {
-  icon = 'assets/generated/icon.ico';
+  icon = resolveAsset('assets/generated/icons/win/icon.ico');
 } else if (process.platform === 'darwin') {
-  icon = 'assets/generated/icon.icns';
+  icon = resolveAsset('assets/generated/icons/mac/icon.icns');
 }
 
 function onClosed() {
@@ -183,7 +206,10 @@ ipcMain.handle('ytmd:list-downloads', async () => {
         try {
           const metaPath = filePath + '.meta.json';
           if (fs.existsSync(metaPath)) {
-            meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+            const parsed: unknown = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+            if (parsed && typeof parsed === 'object') {
+              meta = parsed as { imageSrc?: string; title?: string; artist?: string };
+            }
           }
         } catch { /* ignore */ }
         return { name: e.name, path: filePath, size: stat.size, modified: stat.mtimeMs, imageSrc: meta.imageSrc };
@@ -201,7 +227,9 @@ ipcMain.handle('ytmd:get-cover', async (_, filePath: string) => {
     // Check meta.json first
     const metaPath = filePath + '.meta.json';
     if (fs.existsSync(metaPath)) {
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as {
+        imageSrc?: string;
+      };
       if (meta.imageSrc) return { imageSrc: meta.imageSrc };
     }
     // Fallback: read ID3 embedded artwork
@@ -247,9 +275,6 @@ const initHook = async (win: BrowserWindow) => {
       const stored = config.get(`plugins.${id}`);
       const def = allPluginStubs[id]?.config ?? { enabled: false };
       const merged = deepmerge(def, stored ?? {}) as PluginConfig;
-      if (id === 'video-toggle' || id === 'precise-volume') {
-        console.log(LoggerPrefix, `[Config] ${id}: stored=${JSON.stringify(stored)}, default.enabled=${def.enabled}, merged.enabled=${merged.enabled}`);
-      }
       return merged;
     },
   );
@@ -716,12 +741,11 @@ app.whenReady().then(async () => {
   // About panel — Revamp credits
   app.setAboutPanelOptions({
     applicationName: 'YouTube Music — Revamp by @IsSlashy',
-    applicationVersion: '3.11.0',
+    applicationVersion: '4.0.1',
     copyright: [
       'Revamp by @IsSlashy',
-      'X: @Not_Mikuu',
-      'Dernière mise à jour: 04/03/2026',
-      'Revamp in 8h of work',
+      'X: https://x.com/Slashy_fx',
+      'Dernière mise à jour: 21/06/2026',
       '',
       'Credits: Pear Desktop',
       'https://github.com/pear-devs/pear-desktop',
@@ -949,54 +973,74 @@ app.whenReady().then(async () => {
   });
 
   if (!is.dev() && config.get('options.autoUpdates')) {
+    // Automatic updates: download the new version in the background, then offer
+    // to restart & install it directly in-app — no need to visit GitHub.
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
     const updateTimeout = setTimeout(() => {
-      autoUpdater.checkForUpdatesAndNotify();
+      autoUpdater
+        .checkForUpdates()
+        .catch((err) =>
+          console.error(LoggerPrefix, 'Update check failed:', err),
+        );
       clearTimeout(updateTimeout);
     }, 2000);
-    autoUpdater.on('update-available', () => {
-      const downloadLink =
-        'https://github.com/th-ch/youtube-music/releases/latest';
+
+    let updatePrompted = false;
+    autoUpdater.on('update-downloaded', (info) => {
+      if (updatePrompted) return;
+      updatePrompted = true;
+
       const dialogOptions: Electron.MessageBoxOptions = {
         type: 'info',
         buttons: [
-          t('main.dialog.update-available.buttons.ok'),
-          t('main.dialog.update-available.buttons.download'),
-          t('main.dialog.update-available.buttons.disable'),
+          t('main.dialog.update-available.buttons.ok'), // Later
+          t('main.dialog.update-available.buttons.download'), // Restart now
+          t('main.dialog.update-available.buttons.disable'), // Disable updates
         ],
         title: t('main.dialog.update-available.title'),
         message: t('main.dialog.update-available.message'),
-        detail: t('main.dialog.update-available.detail', { downloadLink }),
+        detail: t('main.dialog.update-available.detail', {
+          downloadLink: info?.version ? `v${info.version}` : '',
+        }),
         defaultId: 1,
         cancelId: 0,
       };
 
-      let dialogPromise: Promise<Electron.MessageBoxReturnValue>;
-      if (mainWindow) {
-        dialogPromise = dialog.showMessageBox(mainWindow, dialogOptions);
-      } else {
-        dialogPromise = dialog.showMessageBox(dialogOptions);
-      }
+      const dialogPromise = mainWindow
+        ? dialog.showMessageBox(mainWindow, dialogOptions)
+        : dialog.showMessageBox(dialogOptions);
 
-      dialogPromise.then((dialogOutput) => {
-        switch (dialogOutput.response) {
-          // Download
-          case 1: {
-            shell.openExternal(downloadLink);
-            break;
-          }
+      dialogPromise
+        .then((dialogOutput) => {
+          switch (dialogOutput.response) {
+            // Restart & install now
+            case 1: {
+              setImmediate(() => autoUpdater.quitAndInstall());
+              break;
+            }
 
-          // Disable updates
-          case 2: {
-            config.set('options.autoUpdates', false);
-            break;
-          }
+            // Disable updates
+            case 2: {
+              config.set('options.autoUpdates', false);
+              break;
+            }
 
-          case 0: {
-            break;
+            // Later — the update installs automatically on next quit
+            case 0:
+            default:
+              break;
           }
-        }
-      }).catch((err) => console.error(LoggerPrefix, 'Update dialog error:', err));
+        })
+        .catch((err) =>
+          console.error(LoggerPrefix, 'Update dialog error:', err),
+        );
     });
+
+    autoUpdater.on('error', (err) =>
+      console.error(LoggerPrefix, 'Auto-update error:', err),
+    );
   }
 
   if (config.get('options.hideMenu') && !config.get('options.hideMenuWarned')) {

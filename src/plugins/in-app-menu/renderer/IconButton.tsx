@@ -5,7 +5,7 @@ import { cacheNoArgs } from '@/providers/decorators';
 
 const iconButton = cacheNoArgs(
   () => css`
-    -webkit-app-region: none;
+    -webkit-app-region: no-drag;
 
     background: transparent;
 

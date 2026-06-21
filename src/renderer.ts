@@ -945,22 +945,14 @@ function replaceNavIcons() {
   };
   setTimeout(initialApply, 1000);
 
-  // Fix ghost song-media-window: collapse when player enters mini mode
+  // Fix ghost song-media-window: collapse when player enters mini mode.
+  // PiP-aware: never collapse while the video is in Picture-in-Picture, otherwise
+  // the collapsed (height:0 / visibility:hidden) container would break/blacken the
+  // PiP source, since the <video> lives inside #song-media-window. The manual PiP
+  // toggle is owned by the dedicated `picture-in-picture` plugin.
   setTimeout(() => {
     const smw = document.querySelector('#song-media-window') as HTMLElement;
     if (!smw) return;
-
-    const updateGhost = (playerEl: Element) => {
-      const state = playerEl.getAttribute('player-ui-state')
-        || playerEl.getAttribute('player-ui-state_')
-        || '';
-      console.log('[YTMusic] player-ui-state =', state);
-      if (state === 'MINIPLAYER') {
-        smw.classList.add('ytmd-ghost-collapsed');
-      } else {
-        smw.classList.remove('ytmd-ghost-collapsed');
-      }
-    };
 
     // Watch both ytmusic-player and ytmusic-player-page for state changes
     const targets = [
@@ -968,11 +960,35 @@ function replaceNavIcons() {
       document.querySelector('ytmusic-player-page'),
     ].filter(Boolean) as Element[];
 
+    const isMiniplayer = () =>
+      targets.some((el) => {
+        const state =
+          el.getAttribute('player-ui-state') ||
+          el.getAttribute('player-ui-state_') ||
+          '';
+        return state === 'MINIPLAYER';
+      });
+
+    const refresh = () => {
+      if (isMiniplayer() && !document.pictureInPictureElement) {
+        smw.classList.add('ytmd-ghost-collapsed');
+      } else {
+        smw.classList.remove('ytmd-ghost-collapsed');
+      }
+    };
+
+    refresh(); // initial check
     for (const el of targets) {
-      updateGhost(el); // initial check
-      new MutationObserver(() => updateGhost(el))
-        .observe(el, { attributeFilter: ['player-ui-state', 'player-ui-state_'] });
+      new MutationObserver(refresh).observe(el, {
+        attributeFilter: ['player-ui-state', 'player-ui-state_'],
+      });
     }
+
+    // Re-evaluate when entering/leaving Picture-in-Picture so the collapse never
+    // hides a video that is currently floating in a PiP window.
+    const video = document.querySelector<HTMLVideoElement>('video');
+    video?.addEventListener('enterpictureinpicture', refresh);
+    video?.addEventListener('leavepictureinpicture', refresh);
   }, 2000);
 
 }
@@ -1540,7 +1556,7 @@ window.ipcRenderer.on('ytmd:show-about', () => {
   h.textContent = 'YouTube Music';
   h.style.cssText = 'font-size:28px;font-weight:700;letter-spacing:-0.03em;margin-bottom:4px;';
   const sub = document.createElement('div');
-  sub.textContent = 'Revamp Edition \u2022 v4.0.0';
+  sub.textContent = 'Revamp Edition \u2022 v4.0.1';
   sub.style.cssText = 'font-size:13px;color:rgba(255,255,255,0.4);font-weight:500;';
   titleBlock.appendChild(h);
   titleBlock.appendChild(sub);
@@ -1555,17 +1571,29 @@ window.ipcRenderer.on('ytmd:show-about', () => {
   infoBlock.appendChild(byLine);
   const details = document.createElement('div');
   details.style.cssText = 'font-size:13px;color:rgba(255,255,255,0.6);line-height:1.6;';
-  const lines = [
-    ['X:', ' @Not_Mikuu'],
-    ['Derni\u00e8re mise \u00e0 jour:', ' 04/03/2026'],
-    ['Revamp in', ' 8h of work'],
+  const lines: Array<[string, string, string?]> = [
+    ['X:', ' @Slashy_fx', 'https://x.com/Slashy_fx'],
+    ['Derni\u00e8re mise \u00e0 jour:', ' 21/06/2026'],
   ];
-  lines.forEach(([label, val], i) => {
+  lines.forEach(([label, val, href], i) => {
     const sp1 = document.createElement('span');
     sp1.textContent = label;
     sp1.style.color = 'rgba(255,255,255,0.35)';
     details.appendChild(sp1);
-    details.appendChild(document.createTextNode(val));
+    if (href) {
+      const a = document.createElement('a');
+      a.textContent = val;
+      a.style.cssText =
+        'color:#49f3f7;text-decoration:none;cursor:pointer;transition:opacity 200ms;';
+      a.addEventListener('click', () => {
+        window.ipcRenderer.send('ytmd:open-url', href);
+      });
+      a.addEventListener('mouseenter', () => { a.style.opacity = '0.7'; });
+      a.addEventListener('mouseleave', () => { a.style.opacity = '1'; });
+      details.appendChild(a);
+    } else {
+      details.appendChild(document.createTextNode(val));
+    }
     if (i < lines.length - 1) details.appendChild(document.createElement('br'));
   });
   infoBlock.appendChild(details);

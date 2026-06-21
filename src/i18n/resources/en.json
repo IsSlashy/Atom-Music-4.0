@@ -69,13 +69,13 @@
       },
       "update-available": {
         "buttons": {
-          "disable": "Disable Updates",
-          "download": "Download",
-          "ok": "OK"
+          "disable": "Disable updates",
+          "download": "Restart now",
+          "ok": "Later"
         },
-        "detail": "A new version is available and can be downloaded at {{downloadLink}}",
-        "message": "A new version is available",
-        "title": "Update Available"
+        "detail": "Version {{downloadLink}} has been downloaded. Restart now to install it?",
+        "message": "An update is ready to install",
+        "title": "Update ready"
       }
     },
     "menu": {
@@ -424,6 +424,29 @@
     "performance-improvement": {
       "description": "Improve performance by enabling experimental scripts",
       "name": "Performance improvement [Beta]"
+    },
+    "picture-in-picture": {
+      "description": "Allows to switch the app to picture-in-picture mode",
+      "menu": {
+        "always-on-top": "Always on top",
+        "hotkey": {
+          "label": "Hotkey",
+          "prompt": {
+            "keybind-options": {
+              "hotkey": "Hotkey"
+            },
+            "label": "Choose a hotkey to toggle picture-in-picture",
+            "title": "Picture-in-picture Hotkey"
+          }
+        },
+        "save-window-position": "Save window position",
+        "save-window-size": "Save window size",
+        "use-native-pip": "Use browser native PiP"
+      },
+      "name": "Picture-in-picture",
+      "templates": {
+        "button": "Picture-in-picture"
+      }
     },
     "precise-volume": {
       "description": "Control the volume precisely using mousewheel/hotkeys, with a custom HUD and customizable volume steps",

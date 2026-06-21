@@ -1,5 +1,9 @@
 appId: com.github.th-ch.youtube-music
 productName: YouTube Music
+publish:
+  provider: github
+  owner: IsSlashy
+  repo: Atom-Music-4.0
 files:
   - '!*'
   - dist

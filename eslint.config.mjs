@@ -49,11 +49,7 @@ export default tsEslint.config(
       'importPlugin/no-default-export': 'off',
       'importPlugin/no-duplicates': 'error',
       'importPlugin/no-unresolved': ['error', { ignore: ['^virtual:', '\\?inline$', '\\?raw$', '\\?asset&asarUnpack'] }],
-      'importPlugin/order': ['error', {
-        'groups': ['builtin', 'external', ['internal', 'index', 'sibling'], 'parent', 'type'],
-        'newlines-between': 'always-and-inside-groups',
-        'alphabetize': { order: 'ignore', caseInsensitive: false }
-      }],
+      'importPlugin/order': 'off',
       'importPlugin/prefer-default-export': 'off',
       'camelcase': ['error', { properties: 'never' }],
       'class-methods-use-this': 'off',

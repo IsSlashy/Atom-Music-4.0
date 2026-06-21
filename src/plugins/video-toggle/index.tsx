@@ -190,86 +190,13 @@ export default createPlugin({
         switchButtonContainer,
       );
 
-      // PiP button in the player bar right-controls
-      const setupPipButton = () => {
-        if (document.getElementById('ytmd-pip-button')) return;
-
-        const pipBtn = document.createElement('button');
-        pipBtn.id = 'ytmd-pip-button';
-        pipBtn.title = 'Picture-in-Picture';
-        pipBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z"/></svg>`;
-
-        pipBtn.addEventListener('click', async () => {
-          if (!video) return;
-
-          if (document.pictureInPictureElement) {
-            await document.exitPictureInPicture();
-            pipBtn.classList.remove('active');
-          } else {
-            try {
-              await video.requestPictureInPicture();
-              pipBtn.classList.add('active');
-            } catch (err) {
-              console.error('PiP failed:', err);
-            }
-          }
-        });
-
-        // Track PiP state changes
-        video?.addEventListener('enterpictureinpicture', () => {
-          pipBtn.classList.add('active');
-        });
-        video?.addEventListener('leavepictureinpicture', () => {
-          pipBtn.classList.remove('active');
-        });
-
-        // Insert into player bar right-controls
-        const rightControls = document.querySelector(
-          'ytmusic-player-bar .right-controls-buttons',
-        );
-        if (rightControls) {
-          rightControls.prepend(pipBtn);
-        }
-      };
-
-      setupPipButton();
-
-      // Auto-PiP: when user clicks the "lecteur réduit" (miniplayer) button,
-      // pop the video out into a native Picture-in-Picture floating window
-      const setupAutoPip = () => {
-        if (!video) return;
-
-        const tryPip = (el: Element) => {
-          const state = el.getAttribute('player-ui-state');
-          if (state === 'MINIPLAYER' && !document.pictureInPictureElement) {
-            video.requestPictureInPicture().catch(() => {});
-          }
-        };
-
-        // Watch both elements — YTM sometimes sets the attribute on one or the other
-        const playerEl = document.querySelector('ytmusic-player');
-        if (playerEl) {
-          new MutationObserver(() => tryPip(playerEl))
-            .observe(playerEl, { attributeFilter: ['player-ui-state'] });
-        }
-        const pageEl = document.querySelector('ytmusic-player-page');
-        if (pageEl) {
-          new MutationObserver(() => tryPip(pageEl))
-            .observe(pageEl, { attributeFilter: ['player-ui-state'] });
-        }
-
-        // Keep video alive during PiP: re-request PiP when a new song starts
-        video.addEventListener('ytmd:src-changed', () => {
-          if (document.pictureInPictureElement) {
-            // Small delay to let the new source load
-            setTimeout(() => {
-              video.requestPictureInPicture().catch(() => {});
-            }, 500);
-          }
-        });
-      };
-
-      setupAutoPip();
+      // NOTE: Picture-in-Picture is now handled by the dedicated
+      // `picture-in-picture` plugin (manual toggle via hotkey, song menu and the
+      // player minimize button). The previous homemade auto-PiP called
+      // requestPictureInPicture() from a MutationObserver (no user gesture ->
+      // NotAllowedError, silently swallowed) and fought renderer.ts's
+      // ghost-collapse of #song-media-window, which made the mini-player /
+      // detach-to-desktop feature unreliable. Removed on purpose.
 
       const forceThumbnail = (img: HTMLImageElement) => {
         const thumbnails: ThumbnailElement[] =

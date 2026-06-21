@@ -28,6 +28,7 @@ export interface DefaultConfig {
     trayClickPlayPause: boolean;
     autoResetAppCache: boolean;
     resumeOnStart: boolean;
+    disableIdlePopup: boolean;
     likeButtons: string;
     proxy: string;
     startingPage: string;
@@ -65,6 +66,7 @@ export const defaultConfig: DefaultConfig = {
     trayClickPlayPause: false,
     autoResetAppCache: false,
     resumeOnStart: true,
+    disableIdlePopup: true,
     likeButtons: '',
     proxy: '',
     startingPage: '',

@@ -70,12 +70,12 @@
       "update-available": {
         "buttons": {
           "disable": "Désactiver les mises à jour",
-          "download": "Télécharger",
-          "ok": "Ok"
+          "download": "Redémarrer maintenant",
+          "ok": "Plus tard"
         },
-        "detail": "Une nouvelle version est disponible et peut-être télécharger sur {{downloadLink}}",
-        "message": "Une nouvelle version est disponible",
-        "title": "Mise à jour disponible"
+        "detail": "La version {{downloadLink}} a été téléchargée. Redémarrer maintenant pour l'installer ?",
+        "message": "Une mise à jour est prête à être installée",
+        "title": "Mise à jour prête"
       }
     },
     "menu": {
@@ -424,6 +424,29 @@
     "performance-improvement": {
       "description": "Améliorer les performances en activant les scripts expérimentaux",
       "name": "Amélioration des performances [Beta]"
+    },
+    "picture-in-picture": {
+      "description": "Permet de basculer l’application en mode image dans image",
+      "menu": {
+        "always-on-top": "Toujours en haut",
+        "hotkey": {
+          "label": "Raccourci clavier",
+          "prompt": {
+            "keybind-options": {
+              "hotkey": "Raccourci clavier"
+            },
+            "label": "Choisissez un raccourci clavier pour activer le mode Image dans l'image",
+            "title": "Touche de raccourci Image dans l'image"
+          }
+        },
+        "save-window-position": "Enregistrer la position de la fenêtre",
+        "save-window-size": "Enregistrer la taille de la fenêtre",
+        "use-native-pip": "Utiliser le mode image dans image natif du navigateur"
+      },
+      "name": "Image dans l'image",
+      "templates": {
+        "button": "Image dans l'image"
+      }
     },
     "precise-volume": {
       "description": "Contrôlez le volume avec précision à l'aide de la molette de la souris/des raccourcis clavier, avec une interface personnalisée et des étapes de volume personnalisables",
