@@ -33,14 +33,62 @@ let firstDataLoaded = false;
 registerWindowDefaultTrustedTypePolicy();
 
 async function listenForApiLoad() {
+  // `initObserver` is the authoritative entry point: it watches the DOM for
+  // `#movie_player` and calls `onApiLoaded()` exactly once (guarded by
+  // `isApiLoaded`). This is only a fast path for the case where the player is
+  // already present by the time plugins finish loading; it must mirror the same
+  // guard so the two paths never run `onApiLoaded()` twice.
   if (!isApiLoaded) {
-    api = document.querySelector('#movie_player');
-    if (api) {
+    const playerApi = document.querySelector<Element & YoutubePlayer>(
+      '#movie_player',
+    );
+    if (playerApi) {
+      api = playerApi;
+      isApiLoaded = true;
       await onApiLoaded();
 
       return;
     }
   }
+}
+
+/**
+ * Resolves once a node matching `selector` exists in the DOM. Uses a
+ * MutationObserver on `document.documentElement` (so it survives slow boots and
+ * SPA re-renders) with a bounded timeout to avoid a perpetual observer. Resolves
+ * `null` if the element never appears within `timeoutMs`.
+ */
+function waitForElement<T extends Element = Element>(
+  selector: string,
+  timeoutMs = 20000,
+): Promise<T | null> {
+  return new Promise<T | null>((resolve) => {
+    const existing = document.querySelector<T>(selector);
+    if (existing) {
+      resolve(existing);
+      return;
+    }
+
+    let settled = false;
+    const finish = (el: T | null) => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      clearTimeout(timer);
+      resolve(el);
+    };
+
+    const observer = new MutationObserver(() => {
+      const found = document.querySelector<T>(selector);
+      if (found) finish(found);
+    });
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+
+    const timer = setTimeout(() => finish(null), timeoutMs);
+  });
 }
 
 // Modern Apple-inspired SVG icons for navigation tabs
@@ -697,6 +745,7 @@ function replaceNavIcons() {
             if (origKnobContainer) origKnobContainer.style.opacity = '0';
 
             let localActive = true;
+            let rafId = 0;
 
             // ---- UPDATE LOOP ----
             const updateLoop = () => {
@@ -709,9 +758,9 @@ function replaceNavIcons() {
                 if (trail) trail.style.width = pct + '%';
                 if (dot) dot.style.left = pct + '%';
               }
-              requestAnimationFrame(updateLoop);
+              rafId = requestAnimationFrame(updateLoop);
             };
-            requestAnimationFrame(updateLoop);
+            rafId = requestAnimationFrame(updateLoop);
 
             // ---- SEEK on custom progress bar click ----
             const onProgressClick = (e: MouseEvent) => {
@@ -809,6 +858,8 @@ function replaceNavIcons() {
             // ---- CLEANUP function ----
             const cleanup = () => {
               localActive = false;
+              if (rafId) cancelAnimationFrame(rafId);
+              rafId = 0;
               uiObserver.disconnect();
               customProgress?.removeEventListener('click', onProgressClick);
               if (playPauseBtn) playPauseBtn.removeEventListener('click', onPlayPause, true);
@@ -817,11 +868,18 @@ function replaceNavIcons() {
               if (localAudio) localAudio.removeEventListener('ended', onEnded);
               if (volumeSlider) volumeSlider.removeEventListener('value-change', onVolumeChange);
               window.ipcRenderer.removeListener('ytmd:update-volume', onIpcVolume);
-              // Restore YTM video - remove our play/src overrides
+              // Restore YTM video - remove our play/src overrides. Use the captured
+              // `ytVideo` reference from patch time (never re-query, the element may
+              // have been re-rendered) and defer the prototype restoration via
+              // queueMicrotask so any in-flight assignment on the overridden setter
+              // settles before we delete the instance properties.
               if (ytVideo) {
-                delete (ytVideo as any).play; // remove instance override, restore prototype
-                delete (ytVideo as any).src;  // remove src override
-                ytVideo.muted = false;
+                const v = ytVideo;
+                queueMicrotask(() => {
+                  delete (v as any).play; // remove instance override, restore prototype
+                  delete (v as any).src;  // remove src override
+                  v.muted = false;
+                });
               }
               // Restore original elements
               if (origTimeInfo) origTimeInfo.style.display = '';
@@ -919,11 +977,16 @@ function replaceNavIcons() {
         guideObserver.observe(guide, { childList: true, subtree: true, attributes: true });
       }
 
-      // Watch for page content changes to hide library chips on navigation
+      // Watch for page content changes to hide library chips on navigation.
+      // Debounced + gated on addedNodes so large libraries don't trigger
+      // hideLibraryTabs() (a full querySelectorAll) on every micro-mutation.
       const contentPage = document.querySelector('#content-page, ytmusic-browse-response, ytmusic-app');
       if (contentPage) {
-        const contentObserver = new MutationObserver(() => {
-          hideLibraryTabs();
+        let contentDebounce: ReturnType<typeof setTimeout> | null = null;
+        const contentObserver = new MutationObserver((mutations) => {
+          if (!mutations.some((m) => m.addedNodes.length > 0)) return;
+          if (contentDebounce) clearTimeout(contentDebounce);
+          contentDebounce = setTimeout(hideLibraryTabs, 150);
         });
         contentObserver.observe(contentPage, { childList: true, subtree: true });
       }
@@ -957,22 +1020,45 @@ function replaceNavIcons() {
     });
   }
 
-  setTimeout(initialApply, 1000);
+  // Kick off the icon/sidebar setup as soon as the guide exists, rather than
+  // betting on a fixed 1s delay (which fails on slow boots). `initialApply`
+  // keeps its own bounded retry for the icon DOM.
+  void waitForElement('ytmusic-guide-renderer, ytmusic-app-layout').then(() => {
+    initialApply();
+  });
 
   // Fix ghost song-media-window: collapse when player enters mini mode.
   // PiP-aware: never collapse while the video is in Picture-in-Picture, otherwise
   // the collapsed (height:0 / visibility:hidden) container would break/blacken the
   // PiP source, since the <video> lives inside #song-media-window. The manual PiP
   // toggle is owned by the dedicated `picture-in-picture` plugin.
-  setTimeout(() => {
-    const smw = document.querySelector('#song-media-window') as HTMLElement;
-    if (!smw) return;
+  //
+  // The observers are installed on the player elements present at setup time.
+  // Because YTM can re-render the player subtree on SPA navigation (detaching
+  // those nodes), we keep the install logic in a function and re-run it whenever
+  // a stable ancestor reports the player nodes (re)appearing.
+  const playerStateObservers: MutationObserver[] = [];
+  let ghostVideoRef: HTMLVideoElement | null = null;
+  let ghostRefresh: (() => void) | null = null;
+
+  const installGhostFix = () => {
+    const smw = document.querySelector<HTMLElement>('#song-media-window');
+    if (!smw) return false;
 
     // Watch both ytmusic-player and ytmusic-player-page for state changes
     const targets = [
       document.querySelector('ytmusic-player'),
       document.querySelector('ytmusic-player-page'),
     ].filter(Boolean) as Element[];
+    if (targets.length === 0) return false;
+
+    // Tear down any previously installed observers/listeners before re-attaching
+    // to the fresh nodes (avoids stacking duplicates after a re-render).
+    for (const obs of playerStateObservers.splice(0)) obs.disconnect();
+    if (ghostVideoRef && ghostRefresh) {
+      ghostVideoRef.removeEventListener('enterpictureinpicture', ghostRefresh);
+      ghostVideoRef.removeEventListener('leavepictureinpicture', ghostRefresh);
+    }
 
     const isMiniplayer = () =>
       targets.some((el) => {
@@ -990,20 +1076,46 @@ function replaceNavIcons() {
         smw.classList.remove('ytmd-ghost-collapsed');
       }
     };
+    ghostRefresh = refresh;
 
     refresh(); // initial check
     for (const el of targets) {
-      new MutationObserver(refresh).observe(el, {
+      const obs = new MutationObserver(refresh);
+      obs.observe(el, {
         attributeFilter: ['player-ui-state', 'player-ui-state_'],
       });
+      playerStateObservers.push(obs);
     }
 
     // Re-evaluate when entering/leaving Picture-in-Picture so the collapse never
     // hides a video that is currently floating in a PiP window.
-    const video = document.querySelector<HTMLVideoElement>('video');
-    video?.addEventListener('enterpictureinpicture', refresh);
-    video?.addEventListener('leavepictureinpicture', refresh);
-  }, 2000);
+    ghostVideoRef = document.querySelector<HTMLVideoElement>('video');
+    ghostVideoRef?.addEventListener('enterpictureinpicture', refresh);
+    ghostVideoRef?.addEventListener('leavepictureinpicture', refresh);
+    return true;
+  };
+
+  void waitForElement('#song-media-window').then(() => {
+    installGhostFix();
+
+    // Re-install after SPA re-renders that swap the player subtree. Observe a
+    // stable ancestor (ytmusic-app / app-layout) and, debounced, re-run the
+    // installer if our observed targets were detached.
+    const stableRoot =
+      document.querySelector('ytmusic-app') ||
+      document.querySelector('ytmusic-app-layout') ||
+      document.documentElement;
+    let reinstallDebounce: ReturnType<typeof setTimeout> | null = null;
+    const reinstallObserver = new MutationObserver(() => {
+      if (reinstallDebounce) clearTimeout(reinstallDebounce);
+      reinstallDebounce = setTimeout(() => {
+        // Only re-install if a current player node is no longer being observed
+        // (cheap check: re-run install which tears down + re-attaches).
+        if (document.querySelector('#song-media-window')) installGhostFix();
+      }, 250);
+    });
+    reinstallObserver.observe(stableRoot, { childList: true, subtree: true });
+  });
 
 }
 
@@ -1140,22 +1252,27 @@ async function onApiLoaded() {
   });
 
   window.ipcRenderer.on('ytmd:get-queue', () => {
-    const queue = document.querySelector<QueueElement>('#queue');
-    window.ipcRenderer.send('ytmd:get-queue-response', {
-      items: queue?.queue.getItems(),
-      autoPlaying: queue?.queue.autoPlaying,
-      continuation: queue?.queue.continuation,
-    } satisfies QueueResponse);
+    try {
+      const queue = document.querySelector<QueueElement>('#queue');
+      window.ipcRenderer.send('ytmd:get-queue-response', {
+        items: queue?.queue?.getItems?.(),
+        autoPlaying: queue?.queue?.autoPlaying,
+        continuation: queue?.queue?.continuation,
+      } satisfies QueueResponse);
+    } catch (err) {
+      console.error('[Atom] ytmd:get-queue failed:', err);
+    }
   });
 
   window.ipcRenderer.on(
     'ytmd:add-to-queue',
     (_, videoId: string, queueInsertPosition: string) => {
+      try {
       const queue = document.querySelector<QueueElement>('#queue');
       const app = document.querySelector<YouTubeMusicAppElement>('ytmusic-app');
-      if (!app) return;
+      if (!app?.networkManager) return;
 
-      const store = queue?.queue.store.store;
+      const store = queue?.queue?.store?.store;
       if (!store) return;
 
       app.networkManager
@@ -1200,7 +1317,13 @@ async function onApiLoaded() {
               },
             });
           }
+        })
+        .catch((err) => {
+          console.error('[Atom] ytmd:add-to-queue fetch failed:', err);
         });
+      } catch (err) {
+        console.error('[Atom] ytmd:add-to-queue failed:', err);
+      }
     },
   );
   window.ipcRenderer.on(
@@ -1231,41 +1354,49 @@ async function onApiLoaded() {
     });
   });
   window.ipcRenderer.on('ytmd:clear-queue', () => {
-    const queue = document.querySelector<QueueElement>('#queue');
-    queue?.queue.store.store.dispatch({
-      type: 'SET_PLAYER_PAGE_INFO',
-      payload: { open: false },
-    });
-    queue?.dispatch({
-      type: 'CLEAR',
-    });
+    try {
+      const queue = document.querySelector<QueueElement>('#queue');
+      queue?.queue?.store?.store?.dispatch({
+        type: 'SET_PLAYER_PAGE_INFO',
+        payload: { open: false },
+      });
+      queue?.dispatch({
+        type: 'CLEAR',
+      });
+    } catch (err) {
+      console.error('[Atom] ytmd:clear-queue failed:', err);
+    }
   });
 
   window.ipcRenderer.on(
     'ytmd:search',
     async (_, query: string, params?: string, continuation?: string) => {
-      const app = document.querySelector<YouTubeMusicAppElement>('ytmusic-app');
-      const searchBox =
-        document.querySelector<SearchBoxElement>('ytmusic-search-box');
+      try {
+        const app = document.querySelector<YouTubeMusicAppElement>('ytmusic-app');
+        const searchBox =
+          document.querySelector<SearchBoxElement>('ytmusic-search-box');
 
-      if (!app || !searchBox) return;
+        if (!app?.networkManager || !searchBox) return;
 
-      const result = await app.networkManager.fetch<
-        unknown,
-        {
-          query: string;
-          params?: string;
-          continuation?: string;
-          suggestStats?: unknown;
-        }
-      >('/search', {
-        query,
-        params,
-        continuation,
-        suggestStats: searchBox.getSearchboxStats(),
-      });
+        const result = await app.networkManager.fetch<
+          unknown,
+          {
+            query: string;
+            params?: string;
+            continuation?: string;
+            suggestStats?: unknown;
+          }
+        >('/search', {
+          query,
+          params,
+          continuation,
+          suggestStats: searchBox.getSearchboxStats?.(),
+        });
 
-      window.ipcRenderer.send('ytmd:search-results', result);
+        window.ipcRenderer.send('ytmd:search-results', result);
+      } catch (err) {
+        console.error('[Atom] ytmd:search failed:', err);
+      }
     },
   );
 
@@ -1366,31 +1497,40 @@ async function onApiLoaded() {
       });
     };
 
-    const pageObserver = new MutationObserver(() => {
-      requestAnimationFrame(replayAnimations);
-    });
+    // All three observers funnel through a single debounced scheduler so a burst
+    // of mutations (common on large libraries) collapses into one rAF-driven
+    // replay instead of forcing a reflow-per-element on every micro-mutation.
+    let replayDebounce: ReturnType<typeof setTimeout> | null = null;
+    const scheduleReplay = () => {
+      if (replayDebounce) clearTimeout(replayDebounce);
+      replayDebounce = setTimeout(() => {
+        requestAnimationFrame(replayAnimations);
+      }, 120);
+    };
+    const onMutations = (mutations: MutationRecord[]) => {
+      if (mutations.some((m) => m.addedNodes.length > 0)) scheduleReplay();
+    };
+
+    // Refs kept so the observers can be disconnected if ever needed.
+    const animObservers: MutationObserver[] = [];
+
+    const pageObserver = new MutationObserver(onMutations);
     pageObserver.observe(contentPage, { childList: true, subtree: false });
+    animObservers.push(pageObserver);
 
     // Also watch the app element for page-type changes
     const app = document.querySelector('ytmusic-app');
     if (app) {
-      const appObserver = new MutationObserver(() => {
-        requestAnimationFrame(replayAnimations);
-      });
+      const appObserver = new MutationObserver(onMutations);
       appObserver.observe(app, { childList: true, subtree: false });
+      animObservers.push(appObserver);
     }
 
     // Watch browse-response swap (deeper)
     const browseWrapper = document.querySelector('#content-page') || contentPage;
-    const deepObserver = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        if (m.addedNodes.length > 0) {
-          requestAnimationFrame(replayAnimations);
-          break;
-        }
-      }
-    });
+    const deepObserver = new MutationObserver(onMutations);
     deepObserver.observe(browseWrapper, { childList: true, subtree: true });
+    animObservers.push(deepObserver);
   })();
 
   // Hide / Force show like buttons

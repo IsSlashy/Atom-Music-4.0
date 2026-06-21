@@ -114,6 +114,12 @@ export default createPlugin({
       } else if (!config.mode || config.mode === 'custom') {
         document.body.classList.add('video-toggle-custom-mode');
         document.body.classList.remove('video-toggle-force-hide');
+      } else {
+        // native / disabled mode: clean up our custom classes
+        document.body.classList.remove(
+          'video-toggle-custom-mode',
+          'video-toggle-force-hide',
+        );
       }
     },
     async start({ getConfig }) {
@@ -208,19 +214,26 @@ export default createPlugin({
       };
 
       const setVideoState = (showVideo: boolean) => {
-        // Don't hide the video while it's playing in PiP — that would cause a black screen
+        const checkbox = document.querySelector<HTMLInputElement>(
+          '.video-switch-button-checkbox',
+        ); // custom mode
+
+        // Don't hide the video while it's playing in PiP — that would cause a black screen.
+        // Re-sync the checkbox so it doesn't stay in an inconsistent (song) state.
         if (!showVideo && document.pictureInPictureElement) {
+          if (checkbox) checkbox.checked = !this.config?.hideVideo;
           return;
         }
 
         if (this.config) {
           this.config.hideVideo = !showVideo;
         }
-        window.mainConfig.plugins.setOptions('video-toggle', this.config);
+        // Persist only the modified field so the store merges it instead of
+        // overwriting the whole config with a possibly-stale frozen snapshot.
+        window.mainConfig.plugins.setOptions('video-toggle', {
+          hideVideo: !showVideo,
+        });
 
-        const checkbox = document.querySelector<HTMLInputElement>(
-          '.video-switch-button-checkbox',
-        ); // custom mode
         if (checkbox) checkbox.checked = !this.config?.hideVideo;
 
         if (player) {
@@ -272,6 +285,13 @@ export default createPlugin({
 
           moveVolumeHud(showVideo);
         }
+
+        // Workaround (th-ch/youtube-music#2459): force YouTube Music to
+        // recompute the player geometry after toggling song<->video, otherwise
+        // the video can end up with a wrong size / a black area.
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new Event('resize'));
+        });
       };
 
       const videoStarted = () => {

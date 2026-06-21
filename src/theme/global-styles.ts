@@ -51,7 +51,12 @@ ytmusic-cast-button {
   display: none !important;
 }
 
-/* Remove useless inaccessible button on top-right corner of the video player */
+/*
+ * Remove the useless inaccessible button on the top-right corner of the video
+ * player. THM-08: scoped to just hiding the buttons container with a single
+ * display:none (no extra opacity/visibility cascade), and the watermark/title
+ * are handled by their own dedicated rule below so this no longer over-reaches.
+ */
 .ytp-chrome-top-buttons {
   display: none !important;
 }
@@ -72,6 +77,13 @@ tp-yt-paper-item.ytmusic-guide-entry-renderer::before {
   padding-bottom: 0;
 }
 
+/*
+ * THM-07: prefer a resilient :has() selector that does not depend on the
+ * sibling order of #av-id. The original "#av-id ~ #player" rule is kept
+ * as a fallback for engines/layouts where :has() does not match, so behaviour
+ * never regresses.
+ */
+#player.ytmusic-player-page:not([player-ui-state='FULLSCREEN']):has(ytmusic-player:not([player-ui-state='FULLSCREEN'])),
 #av-id ~ #player.ytmusic-player-page:not([player-ui-state='FULLSCREEN']) {
   margin-top: auto !important;
   margin-bottom: auto !important;
@@ -98,8 +110,8 @@ tp-yt-paper-dialog {
 /* Liquid glass player bar */
 ytmusic-player-bar {
   background: rgba(0, 0, 0, 0.45) !important;
-  backdrop-filter: blur(30px) saturate(180%) !important;
-  -webkit-backdrop-filter: blur(30px) saturate(180%) !important;
+  backdrop-filter: ${glass.blur} !important;
+  -webkit-backdrop-filter: ${glass.blur} !important;
   border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
@@ -332,18 +344,13 @@ ytmusic-guide-section-renderer > .header {
   padding: 16px 16px 8px !important;
 }
 
-ytmusic-guide-entry-renderer tp-yt-paper-item {
-  border-radius: ${borderRadius.lg} !important;
-  margin: 2px 8px !important;
-  padding: 8px 12px !important;
-  transition: background ${transitions.slow} ${transitions.smoothOut},
-              transform ${transitions.slow} ${transitions.smoothOut},
-              width ${transitions.xslow} ${transitions.smoothOut},
-              height ${transitions.xslow} ${transitions.smoothOut},
-              padding ${transitions.xslow} ${transitions.smoothOut},
-              margin ${transitions.xslow} ${transitions.smoothOut} !important;
-}
-
+/*
+ * THM-04: the base sidebar item layout (size, padding, margin, radius,
+ * transition) is defined once in the "icon-only" rule further down, since the
+ * sidebar is permanently collapsed. This block previously duplicated those
+ * declarations with wider-layout values that were always overridden; only the
+ * interactive states are kept here.
+ */
 ytmusic-guide-entry-renderer tp-yt-paper-item:hover {
   background: ${colors.sidebarItemHover} !important;
 }
@@ -462,7 +469,7 @@ ytmusic-app-layout #guide-wrapper {
   overflow: visible !important;
 }
 
-/* Items: icon-only centered squares */
+/* Items: icon-only centered squares (single source of truth — see THM-04) */
 ytmusic-guide-entry-renderer tp-yt-paper-item {
   justify-content: center !important;
   padding: 8px !important;
@@ -475,7 +482,11 @@ ytmusic-guide-entry-renderer tp-yt-paper-item {
   white-space: nowrap !important;
   overflow: hidden !important;
   transition: background ${transitions.slow} ${transitions.smoothOut},
-              transform ${transitions.slow} ${transitions.smoothOut} !important;
+              transform ${transitions.slow} ${transitions.smoothOut},
+              width ${transitions.xslow} ${transitions.smoothOut},
+              height ${transitions.xslow} ${transitions.smoothOut},
+              padding ${transitions.xslow} ${transitions.smoothOut},
+              margin ${transitions.xslow} ${transitions.smoothOut} !important;
 }
 
 /* Hide all text in sidebar */
@@ -548,11 +559,13 @@ ytmusic-guide-section-renderer #divider {
    ======================================== */
 
 /* Smooth transitions for interactive elements */
+/* THM-09: use !important to match the rest of the theme's strategy so this
+   base transition is not silently dropped by YTM's own rules. */
 a, button, tp-yt-paper-icon-button, yt-icon {
   transition: color ${transitions.normal} ${transitions.easeOut},
               background ${transitions.normal} ${transitions.easeOut},
               opacity ${transitions.normal} ${transitions.easeOut},
-              transform ${transitions.fast} ${transitions.easeOut};
+              transform ${transitions.fast} ${transitions.easeOut} !important;
 }
 
 /* Card hover lift — gentle and smooth both ways */
@@ -618,8 +631,8 @@ ytmusic-multi-page-menu {
 /* Main menu renderer — glass panel */
 ytmusic-multi-page-menu-renderer {
   background: rgba(20, 20, 20, 0.65) !important;
-  backdrop-filter: blur(40px) saturate(180%) !important;
-  -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
+  backdrop-filter: ${glass.blur} !important;
+  -webkit-backdrop-filter: ${glass.blur} !important;
   border: 1px solid rgba(255, 255, 255, 0.1) !important;
   border-radius: ${borderRadius.xl} !important;
   box-shadow: 0 16px 64px rgba(0, 0, 0, 0.5), 0 0 1px rgba(255, 255, 255, 0.08) inset !important;
@@ -709,14 +722,16 @@ ytmusic-multi-page-menu-renderer #footer {
 }
 
 
-/* Hide YouTube watermark / origin text on the video */
+/*
+ * Hide only the YouTube watermark / origin link on the video.
+ * A11Y-04: the video title (.ytp-title / .ytp-title-text) is useful
+ * information for sighted users and assistive technology, so it is NOT hidden
+ * anymore — only the branding watermark is removed.
+ */
 .ytp-watermark,
 .ytp-chrome-top-buttons .ytp-watermark,
 a.ytp-watermark,
-.html5-watermark,
-.ytp-title,
-.ytp-title-text,
-.ytp-chrome-top .ytp-title {
+.html5-watermark {
   display: none !important;
   opacity: 0 !important;
   visibility: hidden !important;
@@ -877,6 +892,31 @@ ytmusic-grid-renderer #contents > *:nth-child(3) { animation: ytmd-page-fade-in 
 ytmusic-grid-renderer #contents > *:nth-child(4) { animation: ytmd-page-fade-in 400ms ${transitions.smoothOut} both; animation-delay: 120ms; }
 ytmusic-grid-renderer #contents > *:nth-child(5) { animation: ytmd-page-fade-in 400ms ${transitions.smoothOut} both; animation-delay: 160ms; }
 ytmusic-grid-renderer #contents > *:nth-child(n+6) { animation: ytmd-page-fade-in 400ms ${transitions.smoothOut} both; animation-delay: 200ms; }
+
+/* ========================================
+   A11Y-01 — Reduced motion
+   Respect the OS "reduce motion" setting: neutralise the cascade animations,
+   page fades, spring transforms and transitions. Uses !important to override
+   the theme's own !important rules.
+   ======================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Cancel the hover lift so motion-sensitive users get no translate jumps */
+  ytmusic-two-row-item-renderer:hover,
+  ytmusic-responsive-list-item-renderer:hover {
+    transform: none !important;
+  }
+}
 `;
 
 export default globalStyles;

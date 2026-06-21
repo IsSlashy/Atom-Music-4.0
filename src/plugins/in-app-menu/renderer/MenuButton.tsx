@@ -36,10 +36,39 @@ export type MenuButtonProps = JSX.HTMLAttributes<HTMLLIElement> & {
   selected?: boolean;
 };
 export const MenuButton = (props: MenuButtonProps) => {
-  const [local, leftProps] = splitProps(props, ['text']);
+  const [local, leftProps] = splitProps(props, ['text', 'onKeyDown']);
+
+  const handleKeyDown = (
+    event: KeyboardEvent & { currentTarget: HTMLLIElement; target: Element },
+  ) => {
+    if (
+      event.key === 'Enter' ||
+      event.key === ' ' ||
+      event.key === 'ArrowDown'
+    ) {
+      event.preventDefault();
+      event.currentTarget.click();
+    }
+
+    if (typeof local.onKeyDown === 'function') {
+      local.onKeyDown(event);
+    } else if (Array.isArray(local.onKeyDown)) {
+      const [handler, data] = local.onKeyDown;
+      handler(data, event);
+    }
+  };
 
   return (
-    <li {...leftProps} class={menuStyle()} data-selected={props.selected}>
+    <li
+      {...leftProps}
+      class={menuStyle()}
+      data-selected={props.selected}
+      role={'menuitem'}
+      tabIndex={0}
+      aria-haspopup={'menu'}
+      aria-expanded={props.selected ?? false}
+      onKeyDown={handleKeyDown}
+    >
       {local.text}
     </li>
   );

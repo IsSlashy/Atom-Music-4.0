@@ -17,12 +17,30 @@ const DATAUPDATED_FALLBACK_TIMEOUT_MS = 1500;
 let songInfo: SongInfo = {} as SongInfo;
 export const getSongInfo = () => songInfo;
 
-window.ipcRenderer.on(
-  'ytmd:update-song-info',
-  (_, extractedSongInfo: SongInfo) => {
-    songInfo = extractedSongInfo;
-  },
-);
+// CFG-05: keep references to module-scope listeners / observers so they can be
+// torn down (avoids duplicated song-info events and leaked observers on
+// re-init after SPA re-render). Semantics of what is sent are unchanged.
+const updateSongInfoListener = (_: unknown, extractedSongInfo: SongInfo) => {
+  songInfo = extractedSongInfo;
+};
+
+// Idempotent registration of the module-scope listener: never register twice.
+let updateSongInfoRegistered = false;
+const registerUpdateSongInfoListener = () => {
+  if (updateSongInfoRegistered) return;
+  window.ipcRenderer.on('ytmd:update-song-info', updateSongInfoListener);
+  updateSongInfoRegistered = true;
+};
+
+registerUpdateSongInfoListener();
+
+// Observers created inside the singleton setup helpers are tracked here so that
+// teardownSongInfo() can disconnect them.
+const trackedObservers = new Set<MutationObserver>();
+const trackObserver = (observer: MutationObserver) => {
+  trackedObservers.add(observer);
+  return observer;
+};
 
 // Used because 'loadeddata' or 'loadedmetadata' weren't firing on song start for some users (https://github.com/th-ch/youtube-music/issues/473)
 const srcChangedEvent = new CustomEvent('ytmd:src-changed');
@@ -36,14 +54,14 @@ export const setupSeekedListener = singleton(() => {
 });
 
 export const setupTimeChangedListener = singleton(() => {
-  const progressObserver = new MutationObserver((mutations) => {
+  const progressObserver = trackObserver(new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       const target = mutation.target as Node & { value: string };
       const numberValue = Number(target.value);
       window.ipcRenderer.send('ytmd:time-changed', numberValue);
       songInfo.elapsedSeconds = numberValue;
     }
-  });
+  }));
   const progressBar = document.querySelector('#progress-bar');
   if (progressBar) {
     progressObserver.observe(progressBar, { attributeFilter: ['value'] });
@@ -51,7 +69,7 @@ export const setupTimeChangedListener = singleton(() => {
 });
 
 export const setupRepeatChangedListener = singleton(() => {
-  const repeatObserver = new MutationObserver((mutations) => {
+  const repeatObserver = trackObserver(new MutationObserver((mutations) => {
     // provided by YouTube Music
     window.ipcRenderer.send(
       'ytmd:repeat-changed',
@@ -63,7 +81,7 @@ export const setupRepeatChangedListener = singleton(() => {
         }
       ).__dataHost.getState().queue.repeatMode,
     );
-  });
+  }));
   repeatObserver.observe(document.querySelector('#right-controls .repeat')!, {
     attributeFilter: ['title'],
   });
@@ -90,7 +108,7 @@ const mapLikeStatus = (status: string | null): LikeType =>
 const LIKE_STATUS_ATTRIBUTE = 'like-status';
 
 export const setupLikeChangedListener = singleton(() => {
-  const likeDislikeObserver = new MutationObserver((mutations) => {
+  const likeDislikeObserver = trackObserver(new MutationObserver((mutations) => {
     window.ipcRenderer.send(
       'ytmd:like-changed',
       mapLikeStatus(
@@ -99,7 +117,7 @@ export const setupLikeChangedListener = singleton(() => {
         ),
       ),
     );
-  });
+  }));
   const likeButtonRenderer = document.querySelector('#like-button-renderer');
   if (likeButtonRenderer) {
     likeDislikeObserver.observe(likeButtonRenderer, {
@@ -158,7 +176,7 @@ const setupPlayerBarObserver = singleton(() => {
   const playerBar = document.querySelector('ytmusic-player-bar');
   if (!playerBar) return;
 
-  const observer = new MutationObserver((mutations) => {
+  const observer = trackObserver(new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       if (mutation.attributeName === 'shuffle-on') {
         window.ipcRenderer.send(
@@ -173,7 +191,7 @@ const setupPlayerBarObserver = singleton(() => {
         );
       }
     }
-  });
+  }));
 
   observer.observe(playerBar, {
     attributes: true,
@@ -188,9 +206,9 @@ export const setupAutoPlayChangedListener = singleton(() => {
     '.autoplay > tp-yt-paper-toggle-button',
   );
 
-  const observer = new MutationObserver(() => {
+  const observer = trackObserver(new MutationObserver(() => {
     window.ipcRenderer.send('ytmd:autoplay-changed');
-  });
+  }));
 
   observer.observe(autoplaySlider!, {
     attributes: true,
@@ -199,36 +217,56 @@ export const setupAutoPlayChangedListener = singleton(() => {
   });
 });
 
+// CFG-05: track the per-channel IPC listeners registered by setupSongInfo so a
+// teardown can remove them, and guard against double registration on re-init.
+let songInfoInitialized = false;
+const setupListeners: { channel: string; listener: (...args: never[]) => void }[] =
+  [];
+// Tracks the <video> element and listeners attached so they can be removed.
+let trackedVideo: HTMLVideoElement | null = null;
+const trackedVideoListeners: { type: string; listener: (e: Event) => void }[] =
+  [];
+
 export const setupSongInfo = (api: YoutubePlayer) => {
-  window.ipcRenderer.on('ytmd:setup-time-changed-listener', () => {
+  // Idempotent: a second call (e.g. after an SPA re-render) must not register
+  // duplicate IPC listeners which would emit song-info events twice.
+  if (songInfoInitialized) return;
+  songInfoInitialized = true;
+
+  const onSetup = (channel: string, listener: () => void) => {
+    window.ipcRenderer.on(channel, listener);
+    setupListeners.push({ channel, listener });
+  };
+
+  onSetup('ytmd:setup-time-changed-listener', () => {
     setupTimeChangedListener();
   });
 
-  window.ipcRenderer.on('ytmd:setup-like-changed-listener', () => {
+  onSetup('ytmd:setup-like-changed-listener', () => {
     setupLikeChangedListener();
   });
 
-  window.ipcRenderer.on('ytmd:setup-repeat-changed-listener', () => {
+  onSetup('ytmd:setup-repeat-changed-listener', () => {
     setupRepeatChangedListener();
   });
 
-  window.ipcRenderer.on('ytmd:setup-volume-changed-listener', () => {
+  onSetup('ytmd:setup-volume-changed-listener', () => {
     setupVolumeChangedListener(api);
   });
 
-  window.ipcRenderer.on('ytmd:setup-shuffle-changed-listener', () => {
+  onSetup('ytmd:setup-shuffle-changed-listener', () => {
     setupShuffleChangedListener();
   });
 
-  window.ipcRenderer.on('ytmd:setup-fullscreen-changed-listener', () => {
+  onSetup('ytmd:setup-fullscreen-changed-listener', () => {
     setupFullScreenChangedListener();
   });
 
-  window.ipcRenderer.on('ytmd:setup-autoplay-changed-listener', () => {
+  onSetup('ytmd:setup-autoplay-changed-listener', () => {
     setupAutoPlayChangedListener();
   });
 
-  window.ipcRenderer.on('ytmd:setup-seeked-listener', () => {
+  onSetup('ytmd:setup-seeked-listener', () => {
     setupSeekedListener();
   });
 
@@ -308,8 +346,15 @@ export const setupSongInfo = (api: YoutubePlayer) => {
   const video = document.querySelector('video');
 
   if (video) {
+    // CFG-05: capture the video reference and its listeners so teardown can
+    // detach them.
+    trackedVideo = video;
     for (const status of ['playing', 'pause'] as const) {
       video.addEventListener(status, playPausedHandlers[status]);
+      trackedVideoListeners.push({
+        type: status,
+        listener: playPausedHandlers[status],
+      });
     }
 
     if (!isNaN(video.duration)) {
@@ -360,4 +405,40 @@ export const setupSongInfo = (api: YoutubePlayer) => {
 
     window.ipcRenderer.send('ytmd:video-src-changed', data);
   }
+};
+
+/**
+ * CFG-05: Tear down every listener / observer registered by this module so a
+ * subsequent re-init does not duplicate song-info events nor leak observers.
+ * Safe to call even if setup never ran (no-op for what isn't registered).
+ */
+export const teardownSongInfo = () => {
+  // Disconnect all tracked MutationObservers.
+  for (const observer of trackedObservers) {
+    observer.disconnect();
+  }
+  trackedObservers.clear();
+
+  // Remove the per-channel IPC listeners registered by setupSongInfo.
+  for (const { channel, listener } of setupListeners) {
+    window.ipcRenderer.off(channel, listener as never);
+  }
+  setupListeners.length = 0;
+
+  // Detach the tracked video listeners.
+  if (trackedVideo) {
+    for (const { type, listener } of trackedVideoListeners) {
+      trackedVideo.removeEventListener(type, listener);
+    }
+  }
+  trackedVideoListeners.length = 0;
+  trackedVideo = null;
+
+  // Remove the module-scope song-info listener; allow re-registration later.
+  if (updateSongInfoRegistered) {
+    window.ipcRenderer.off('ytmd:update-song-info', updateSongInfoListener);
+    updateSongInfoRegistered = false;
+  }
+
+  songInfoInitialized = false;
 };

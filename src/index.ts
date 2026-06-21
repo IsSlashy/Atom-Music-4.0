@@ -502,11 +502,17 @@ async function createMainWindow() {
     const scaledX = windowX;
     const scaledY = windowY;
 
+    // Use the display workArea (excludes taskbar/dock) and a coherent margin
+    // on every edge so the visibility check is symmetric. We require at least
+    // half of the window (in each axis) to overlap the usable area.
+    const area = display.workArea;
+    const margin = 8;
+
     if (
-      scaledX + scaledWidth / 2 < display.bounds.x - 8 || // Left
-      scaledX + scaledWidth / 2 > display.bounds.x + display.bounds.width || // Right
-      scaledY < display.bounds.y - 8 || // Top
-      scaledY + scaledHeight / 2 > display.bounds.y + display.bounds.height // Bottom
+      scaledX + scaledWidth / 2 < area.x - margin || // Left
+      scaledX + scaledWidth / 2 > area.x + area.width + margin || // Right
+      scaledY + scaledHeight / 2 < area.y - margin || // Top
+      scaledY + scaledHeight / 2 > area.y + area.height + margin // Bottom
     ) {
       // Window is offscreen
       if (is.dev()) {
@@ -539,12 +545,12 @@ async function createMainWindow() {
   win.on('closed', onClosed);
 
   win.on('move', () => {
-    if (win.isMaximized()) {
+    if (win.isMaximized() || win.isFullScreen()) {
       return;
     }
 
     const [x, y] = win.getPosition();
-    lateSave('window-position', { x, y });
+    lateSaveDeferred('window-position', { x, y });
   });
 
   let winWasMaximized: boolean;
@@ -558,11 +564,11 @@ async function createMainWindow() {
       config.set('window-maximized', isMaximized);
     }
 
-    if (isMaximized) {
+    if (isMaximized || win.isFullScreen()) {
       return;
     }
 
-    lateSave('window-size', {
+    lateSaveDeferred('window-size', {
       width,
       height,
     });
@@ -585,6 +591,50 @@ async function createMainWindow() {
     }, 600);
   }
 
+  const pendingSaves: Record<
+    string,
+    { value: unknown; fn: (key: string, value: unknown) => void }
+  > = {};
+
+  function lateSaveDeferred(
+    key: string,
+    value: unknown,
+    fn: (key: string, value: unknown) => void = config.set,
+  ) {
+    pendingSaves[key] = { value, fn };
+    lateSave(
+      key,
+      value,
+      (k, v) => {
+        delete pendingSaves[k];
+        fn(k, v);
+      },
+    );
+  }
+
+  // Flush any debounced saves immediately so we don't lose the latest
+  // window-position/window-size when the app is closing.
+  function flushSavedTimeouts() {
+    for (const key of Object.keys(savedTimeouts)) {
+      const timeout = savedTimeouts[key];
+      if (timeout) {
+        clearTimeout(timeout);
+        savedTimeouts[key] = undefined;
+      }
+    }
+
+    for (const key of Object.keys(pendingSaves)) {
+      const pending = pendingSaves[key];
+      if (pending) {
+        pending.fn(key, pending.value);
+        delete pendingSaves[key];
+      }
+    }
+  }
+
+  app.on('before-quit', flushSavedTimeouts);
+  win.on('close', flushSavedTimeouts);
+
   app.on('render-process-gone', (_event, _webContents, details) => {
     showUnresponsiveDialog(win, details);
   });
@@ -598,13 +648,9 @@ async function createMainWindow() {
   removeContentSecurityPolicy();
 
   // Pipe renderer console messages to main process stdout for debugging
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  win.webContents.on('console-message' as any, (_e: any, level: any, message: any) => {
-    if (typeof message === 'string') {
-      console.log(`[RENDERER:${level}] ${message}`);
-    } else {
-      console.log(`[RENDERER] args:`, JSON.stringify([level, message]).slice(0, 200));
-    }
+  win.webContents.on('console-message', (event) => {
+    const { level, message } = event;
+    console.log(`[RENDERER:${level}] ${message}`);
   });
 
   win.webContents.on('dom-ready', () => {
@@ -618,6 +664,61 @@ async function createMainWindow() {
       });
     }
   });
+  // Hostnames that are allowed to be navigated to within the app window.
+  // Anything else (external links, ads, third-party redirects) is opened in
+  // the user's default browser instead. This is intentionally permissive so
+  // we never block legitimate YouTube Music / Google sign-in flows.
+  const isInternalNavigation = (rawUrl: string): boolean => {
+    let host: string;
+    try {
+      const parsed = new URL(rawUrl);
+      // Allow non-http(s) schemes (e.g. blob:, data:, devtools:) to pass
+      // through untouched.
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        return true;
+      }
+      host = parsed.hostname;
+    } catch {
+      return true;
+    }
+
+    return (
+      host === 'music.youtube.com' ||
+      host.endsWith('.youtube.com') ||
+      host === 'youtube.com' ||
+      host.endsWith('.google.com') ||
+      host === 'google.com' ||
+      host.endsWith('.googleusercontent.com') ||
+      host.endsWith('.gstatic.com') ||
+      host.endsWith('.ggpht.com') ||
+      host === 'accounts.google.com'
+    );
+  };
+
+  // window.open / target=_blank: allow internal (YouTube/Google, including the
+  // OAuth sign-in popup) windows to open normally, send external destinations to
+  // the default browser, and deny anything else.
+  win.webContents.setWindowOpenHandler(({ url: openUrl }) => {
+    if (isInternalNavigation(openUrl)) {
+      return { action: 'allow' };
+    }
+    if (/^https?:\/\//.test(openUrl)) {
+      shell.openExternal(openUrl).catch(() => {});
+    }
+    return { action: 'deny' };
+  });
+
+  // Keep top-level navigations inside trusted domains; send external ones to
+  // the default browser instead of navigating away from the app.
+  win.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (!isInternalNavigation(navigationUrl)) {
+      event.preventDefault();
+      if (/^https?:\/\//.test(navigationUrl)) {
+        shell.openExternal(navigationUrl).catch(() => {});
+      }
+    }
+  });
+
   win.webContents.on('will-redirect', (event) => {
     const url = new URL(event.url);
 

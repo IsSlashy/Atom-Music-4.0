@@ -157,6 +157,7 @@ export const SettingControl = (props: SettingControlProps) => {
           <label class={toggleStyle()}>
             <input
               type="checkbox"
+              aria-label={formatLabel(props.label)}
               checked={props.value as boolean}
               onChange={(e) => props.onChange(e.currentTarget.checked)}
             />
@@ -168,6 +169,7 @@ export const SettingControl = (props: SettingControlProps) => {
             <input
               class={sliderStyle()}
               type="range"
+              aria-label={formatLabel(props.label)}
               min={0}
               max={
                 typeof props.defaultValue === 'number'
@@ -185,6 +187,7 @@ export const SettingControl = (props: SettingControlProps) => {
           <input
             class={inputStyle()}
             type="text"
+            aria-label={formatLabel(props.label)}
             value={props.value as string}
             onChange={(e) => props.onChange(e.currentTarget.value)}
           />

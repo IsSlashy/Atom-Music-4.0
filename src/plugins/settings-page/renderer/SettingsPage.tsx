@@ -208,13 +208,19 @@ export const SettingsPage = (props: SettingsPageProps) => {
             style={{ display: 'flex', 'align-items': 'center', gap: '12px' }}
           >
             <span class={shortcutHintStyle()}>Ctrl+,</span>
-            <button class={closeButtonStyle()} onClick={props.onClose}>
+            <button
+              class={closeButtonStyle()}
+              aria-label={'Close settings'}
+              onClick={props.onClose}
+            >
               {'✕'}
             </button>
           </div>
         </div>
         <input
           class={searchStyle()}
+          type="search"
+          aria-label={'Search plugins'}
           placeholder="Search plugins..."
           value={search()}
           onInput={(e) => setSearch(e.currentTarget.value)}

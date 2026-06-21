@@ -38,6 +38,33 @@ declare global {
     i18n: {
       t: typeof t;
     };
+    /**
+     * Atom Music internal: plays a downloaded local file in-app, taking over
+     * the YTM player bar. Installed by `replaceNavIcons()` in renderer.ts.
+     */
+    __ytmdPlayLocalFile?: (file: {
+      name: string;
+      path: string;
+      imageSrc?: string;
+    }) => Promise<void> | void;
+    /**
+     * Atom Music internal: tears down the current local-playback session
+     * (observers, listeners, video overrides). Null when inactive.
+     */
+    __ytmdLocalCleanup?: (() => void) | null;
+    /**
+     * Atom Music internal: guard flag ensuring the 'ytmd-play-local' document
+     * listener is only bound once across sidebar re-injections.
+     */
+    __ytmdLocalPlayBound?: boolean;
+  }
+
+  interface DocumentEventMap {
+    'ytmd-play-local': CustomEvent<{
+      name: string;
+      path: string;
+      imageSrc?: string;
+    }>;
   }
 }
 

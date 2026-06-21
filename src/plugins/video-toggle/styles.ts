@@ -7,19 +7,32 @@ export const buttonSwitcherStyles = `
   position: relative;
 }
 
-/* Force center the toggle container */
+/* Force center the toggle container.
+   The container itself is non-interactive (pointer-events: none) so the empty
+   area never swallows player clicks/drags — only the inner button is clickable.
+   Width is constrained so the absolutely-positioned overlay doesn't span the
+   whole player on top of #song-video. */
 #ytmd-video-toggle-switch-button-container {
   position: absolute !important;
   top: 0 !important;
-  width: 100% !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: auto !important;
   display: flex !important;
   justify-content: center !important;
-  z-index: 999;
+  z-index: var(--ytmd-video-toggle-z, 10);
   pointer-events: none;
 }
 
+/* Hide the switch while the player is minimized (MINIPLAYER) so it doesn't sit
+   on top of the video and intercept the drag/move zone. */
+ytmusic-player[player-ui-state='MINIPLAYER'] #ytmd-video-toggle-switch-button-container,
+ytmusic-player[player-ui-state_='MINIPLAYER'] #ytmd-video-toggle-switch-button-container {
+  display: none !important;
+}
+
 .video-toggle-custom-mode .video-switch-button {
-  z-index: 999;
+  z-index: var(--ytmd-video-toggle-z, 10);
   box-sizing: border-box;
   padding: 0;
   margin-top: 16px;

@@ -214,6 +214,12 @@ export const TitleBar = (props: TitleBarProps) => {
       data-ytmd-main-panel={true}
       id={'ytmd-title-bar-main-panel'}
       tabIndex={0}
+      onDblClick={(e) => {
+        // double-clicking the empty (drag) area of the titlebar toggles maximize
+        if (props.enableController && e.target === e.currentTarget) {
+          void handleToggleMaximize();
+        }
+      }}
       onKeyDown={(e: KeyboardEvent) => {
         const items = menu()?.items;
         if (!items || collapsed()) return;
@@ -329,7 +335,7 @@ export const TitleBar = (props: TitleBarProps) => {
                 <>
                   <MenuButton
                     data-index={index}
-                    data-length={data()?.items.length}
+                    data-length={menu()?.items.length}
                     onClick={handleClick}
                     ref={setAnchor}
                     selected={openTarget() === anchor()}

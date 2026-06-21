@@ -12,13 +12,27 @@ export const colors = {
   blackPure: '#000',
   white: '#ffffff',
   textPrimary: '#f1f1f1',
-  textSecondary: 'rgba(255, 255, 255, 0.7)',
-  textTertiary: 'rgba(255, 255, 255, 0.5)',
+  // A11Y-05: low-opacity text on translucent glass over uncontrolled
+  // backgrounds fell below the AA 4.5:1 threshold. Secondary/tertiary text
+  // opacities were raised to stay legible while keeping a visible hierarchy.
+  textSecondary: 'rgba(255, 255, 255, 0.78)',
+  textTertiary: 'rgba(255, 255, 255, 0.62)',
   scrollbarThumb: 'rgb(126, 126, 126)',
   separator: 'rgba(255, 255, 255, 0.2)',
   hoverOverlay: 'hsla(0, 0%, 100%, 0.1)',
+  // Primary brand accent (Atom Music cyan). Used across the custom theme
+  // (player glass glow, active states). UX-08: this is the single source of
+  // truth for the accent. The `#3ea6ff` used by SettingControl is YouTube's
+  // native blue, exposed separately below as `accentSecondary` so the two are
+  // documented and not confused.
   accent: '#49f3f7',
-  glassBg: 'rgba(0, 0, 0, 0.35)',
+  // Secondary accent — YouTube Music's native blue. Kept for components that
+  // intentionally match YTM's own controls (e.g. SettingControl toggles).
+  accentSecondary: '#3ea6ff',
+  // A11Y-05: raised from 0.35 so text on glass surfaces (menus, tooltips,
+  // sidebar) sits on a more opaque backdrop and reaches readable contrast
+  // regardless of the underlying page content.
+  glassBg: 'rgba(0, 0, 0, 0.55)',
   glassBorder: 'rgba(255, 255, 255, 0.1)',
   glassBorderHover: 'rgba(255, 255, 255, 0.18)',
   sidebarItemHover: 'rgba(255, 255, 255, 0.06)',
@@ -42,7 +56,7 @@ export const borderRadius = {
   md: '8px',
   lg: '12px',
   xl: '16px',
-  pill: '200px',
+  pill: '9999px',
   round: '50%',
 } as const;
 
@@ -83,8 +97,11 @@ export const transitions = {
 } as const;
 
 export const glass = {
-  blur: 'blur(30px) saturate(180%)',
-  blurLight: 'blur(20px) saturate(150%)',
+  // THM-03: blur radii capped at 12-16px. Larger radii (20-40px) on wide /
+  // permanent containers caused GPU stutter on resize. 16px keeps the glass
+  // look while staying cheap to composite.
+  blur: 'blur(16px) saturate(180%)',
+  blurLight: 'blur(12px) saturate(150%)',
 } as const;
 
 export const layout = {
