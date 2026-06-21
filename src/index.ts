@@ -854,7 +854,7 @@ app.whenReady().then(async () => {
   // About panel — Revamp credits
   app.setAboutPanelOptions({
     applicationName: 'YouTube Music — Revamp by @IsSlashy',
-    applicationVersion: '4.0.1',
+    applicationVersion: '4.0.2',
     copyright: [
       'Revamp by @IsSlashy',
       'X: https://x.com/Slashy_fx',

@@ -2,7 +2,7 @@
   "name": "youtube-music",
   "desktopName": "com.github.th_ch.youtube_music",
   "productName": "YouTube Music",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "packageManager": "pnpm@9.15.9",
   "description": "YouTube Music Desktop App - including custom plugins",
   "main": "./dist/main/index.js",

@@ -1710,7 +1710,7 @@ window.ipcRenderer.on('ytmd:show-about', () => {
   h.textContent = 'YouTube Music';
   h.style.cssText = 'font-size:28px;font-weight:700;letter-spacing:-0.03em;margin-bottom:4px;';
   const sub = document.createElement('div');
-  sub.textContent = 'Revamp Edition \u2022 v4.0.1';
+  sub.textContent = 'Revamp Edition \u2022 v4.0.2';
   sub.style.cssText = 'font-size:13px;color:rgba(255,255,255,0.4);font-weight:500;';
   titleBlock.appendChild(h);
   titleBlock.appendChild(sub);
