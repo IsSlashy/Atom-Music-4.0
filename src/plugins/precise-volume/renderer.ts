@@ -17,12 +17,18 @@ export const moveVolumeHud = debounce((showVideo: boolean) => {
     return;
   }
 
-  volumeHud.style.top = showVideo
-    ? `${($('ytmusic-player')!.clientHeight - $('video')!.clientHeight) / 2}px`
-    : '0';
+  const player = $('ytmusic-player');
+  const video = $('video');
+  volumeHud.style.top =
+    showVideo && player && video
+      ? `${(player.clientHeight - video.clientHeight) / 2}px`
+      : '0';
 }, 250);
 
 let options: PreciseVolumePluginConfig;
+
+// Undo steps for what onPlayerApiReady sets up, run by stop().
+let cleanups: (() => void)[] = [];
 
 export const onPlayerApiReady = async (
   playerApi: YoutubePlayer,
@@ -44,6 +50,11 @@ export const onPlayerApiReady = async (
     slider.classList.remove('on-hover');
   }, 2500);
 
+  // Workaround: computedStyleMap().get(string) returns CSSKeywordValue instead of CSSStyleValue
+  const isVideoHidden = () =>
+    ($('#main-panel')?.computedStyleMap().get('display') as CSSKeywordValue)
+      ?.value === 'none';
+
   /** Restore saved volume and setup tooltip */
   async function firstRun() {
     if (typeof options.savedVolume === 'number') {
@@ -59,20 +70,21 @@ export const onPlayerApiReady = async (
 
     setupLocalArrowShortcuts();
 
-    // Workaround: computedStyleMap().get(string) returns CSSKeywordValue instead of CSSStyleValue
-    const noVid =
-      ($('#main-panel')?.computedStyleMap().get('display') as CSSKeywordValue)
-        ?.value === 'none';
+    const noVid = isVideoHidden();
     injectVolumeHud(noVid);
+    watchPlayerPage();
     if (!noVid) {
       setupVideoPlayerOnwheel();
       if (!(await window.mainConfig.plugins.isEnabled('video-toggle'))) {
         // Video-toggle handles hud positioning on its own
         const videoMode = () =>
-          api.getPlayerResponse().videoDetails?.musicVideoType !==
+          api.getPlayerResponse()?.videoDetails?.musicVideoType !==
           'MUSIC_VIDEO_TYPE_ATV';
-        $('video')?.addEventListener('ytmd:src-changed', () =>
-          moveVolumeHud(videoMode()),
+        const onSrcChanged = () => moveVolumeHud(videoMode());
+        const video = $('video');
+        video?.addEventListener('ytmd:src-changed', onSrcChanged);
+        cleanups.push(() =>
+          video?.removeEventListener('ytmd:src-changed', onSrcChanged),
         );
       }
     }
@@ -90,13 +102,37 @@ export const onPlayerApiReady = async (
     } else {
       const position = 'top: 10px; left: 10px;';
       const mainStyle =
-        'font-size: xxx-large; webkit-text-stroke: 1px black; font-weight: 600;';
+        'font-size: xxx-large; -webkit-text-stroke: 1px black; font-weight: 600;';
 
       $('#song-video')?.insertAdjacentHTML(
         'afterend',
         `<span id="volumeHud" style="${position + mainStyle}"></span>`,
       );
     }
+  }
+
+  /** YTM rebuilds <ytmusic-player> at some window sizes, which drops the HUD */
+  function watchPlayerPage() {
+    const playerPage = $('ytmusic-player-page');
+    if (!playerPage) return;
+
+    // At most one cheap check every 250 ms
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new MutationObserver(() => {
+      if (timer) return;
+
+      timer = setTimeout(() => {
+        timer = undefined;
+        if (!$('#volumeHud')) {
+          injectVolumeHud(isVideoHidden());
+        }
+      }, 250);
+    });
+    observer.observe(playerPage, { childList: true, subtree: true });
+    cleanups.push(() => {
+      observer.disconnect();
+      clearTimeout(timer);
+    });
   }
 
   function showVolumeHud(volume: number) {
@@ -116,11 +152,13 @@ export const onPlayerApiReady = async (
     const panel = $<HTMLElement>('#main-panel');
     if (!panel) return;
 
-    panel.addEventListener('wheel', (event) => {
+    const onWheel = (event: WheelEvent) => {
       event.preventDefault();
       // Event.deltaY < 0 means wheel-up
       changeVolume(event.deltaY < 0);
-    });
+    };
+    panel.addEventListener('wheel', onWheel);
+    cleanups.push(() => panel.removeEventListener('wheel', onWheel));
   }
 
   function saveVolume(volume: number) {
@@ -133,19 +171,28 @@ export const onPlayerApiReady = async (
     const playerbar = $<HTMLElement>('ytmusic-player-bar');
     if (!playerbar) return;
 
-    playerbar.addEventListener('wheel', (event) => {
+    const onWheel = (event: WheelEvent) => {
       event.preventDefault();
       // Event.deltaY < 0 means wheel-up
       changeVolume(event.deltaY < 0);
-    });
+    };
 
     // Keep track of mouse position for showVolumeSlider()
-    playerbar.addEventListener('mouseenter', () => {
+    const onMouseEnter = () => {
       playerbar.classList.add('on-hover');
-    });
+    };
 
-    playerbar.addEventListener('mouseleave', () => {
+    const onMouseLeave = () => {
       playerbar.classList.remove('on-hover');
+    };
+
+    playerbar.addEventListener('wheel', onWheel);
+    playerbar.addEventListener('mouseenter', onMouseEnter);
+    playerbar.addEventListener('mouseleave', onMouseLeave);
+    cleanups.push(() => {
+      playerbar.removeEventListener('wheel', onWheel);
+      playerbar.removeEventListener('mouseenter', onMouseEnter);
+      playerbar.removeEventListener('mouseleave', onMouseLeave);
     });
 
     setupSliderObserver();
@@ -180,6 +227,7 @@ export const onPlayerApiReady = async (
       attributeFilter: ['value'],
       attributeOldValue: true,
     });
+    cleanups.push(() => sliderObserver.disconnect());
   }
 
   function setVolume(value: number) {
@@ -251,7 +299,7 @@ export const onPlayerApiReady = async (
 
   function setupLocalArrowShortcuts() {
     if (options.arrowsShortcut) {
-      window.addEventListener('keydown', (event) => {
+      const onKeyDown = (event: KeyboardEvent) => {
         if (
           $<HTMLElement & { opened: boolean }>('ytmusic-search-box')?.opened
         ) {
@@ -271,7 +319,9 @@ export const onPlayerApiReady = async (
             break;
           }
         }
-      });
+      };
+      window.addEventListener('keydown', onKeyDown);
+      cleanups.push(() => window.removeEventListener('keydown', onKeyDown));
     }
   }
 
@@ -279,10 +329,22 @@ export const onPlayerApiReady = async (
     changeVolume(toIncrease),
   );
   context.ipc.on('setVolume', (value: number) => setVolume(value));
+  cleanups.push(() => {
+    context.ipc.removeAllListeners('changeVolume');
+    context.ipc.removeAllListeners('setVolume');
+  });
 
   await firstRun();
 };
 
 export const onConfigChange = (config: PreciseVolumePluginConfig) => {
   options = config;
+};
+
+export const stop = () => {
+  for (const cleanup of cleanups) {
+    cleanup();
+  }
+  cleanups = [];
+  $('#volumeHud')?.remove();
 };

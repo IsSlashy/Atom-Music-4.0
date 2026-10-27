@@ -1,6 +1,8 @@
 export interface VideoSwitchButtonProps {
   onClick?: (event: MouseEvent) => void;
   onChange?: (event: Event) => void;
+  /** Video mode. Kept in sync so a re-mounted switch shows the real state. */
+  checked?: boolean;
   songButtonText: string;
   videoButtonText: string;
 }
@@ -13,7 +15,7 @@ export const VideoSwitchButton = (props: VideoSwitchButtonProps) => (
     onChange={(e) => props.onChange?.(e)}
   >
     <input
-      checked={true}
+      checked={props.checked ?? true}
       class="video-switch-button-checkbox"
       id="video-toggle-video-switch-button-checkbox"
       type="checkbox"
