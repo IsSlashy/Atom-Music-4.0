@@ -1,0 +1,9 @@
+# Supply chain hardening: a new release is installed only once it is 6 hours
+# old, and only these packages may run install scripts.
+minimumReleaseAge: 360
+allowBuilds:
+  bufferutil: true
+  electron-winstaller: true
+  esbuild: true
+  unrs-resolver: true
+  utf-8-validate: true

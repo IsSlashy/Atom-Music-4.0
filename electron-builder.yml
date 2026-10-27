@@ -17,6 +17,14 @@ files:
   - '!node_modules/**/*.ts'
 asarUnpack:
   - assets
+# Chromium locales to ship: the app is translated to English and French only.
+# Chromium picks its locale (and the language YouTube Music answers in) among
+# these, so other system languages fall back to English. On macOS the English
+# folder is en.lproj, hence 'en' next to 'en-US'.
+electronLanguages:
+  - en
+  - en-US
+  - fr
 mac:
   identity: null
   target:
@@ -32,12 +40,10 @@ win:
     - target: nsis-web
       arch:
         - x64
-        - ia32
         - arm64
     - target: portable
       arch:
         - x64
-        - ia32
         - arm64
   compression: maximum
 nsisWeb:
@@ -53,7 +59,6 @@ linux:
       arch:
         - x64
         - arm64
-        - armv7l
     - target: flatpak
       arch:
         - x64
@@ -61,7 +66,6 @@ linux:
       arch:
         - x64
         - arm64
-        - armv7l
     - target: rpm
       arch:
         - x64
@@ -73,12 +77,10 @@ linux:
       arch:
         - x64
         - arm64
-        - armv7l
     - target: tar.gz
       arch:
         - x64
         - arm64
-        - armv7l
 appImage:
   description: >-
     YouTube Music Desktop App bundled with custom plugins (and built-in ad
