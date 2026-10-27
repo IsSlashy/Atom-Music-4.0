@@ -37,6 +37,11 @@ export interface DefaultConfig {
     usePodcastParticipantAsArtist: boolean;
     themes: string[];
     customWindowTitle?: string;
+    /**
+     * Which of YTM's player bars to load. YTM serves the new one to part of
+     * its visitors; 'classic' and 'new' pin the choice, 'auto' leaves it to YTM.
+     */
+    playerBar: 'classic' | 'new' | 'auto';
   };
   'plugins': Record<string, unknown>;
 }
@@ -73,6 +78,7 @@ export const defaultConfig: DefaultConfig = {
     overrideUserAgent: false,
     usePodcastParticipantAsArtist: false,
     themes: [],
+    playerBar: 'auto',
   },
   'plugins': {},
 };
