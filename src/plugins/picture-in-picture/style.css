@@ -15,19 +15,36 @@ ytmusic-app-layout.pip ytmusic-player-expanding-menu {
   backdrop-filter: blur(5px) brightness(20%);
 }
 
-/* fix volumeHud position when both in-app-menu and PiP are active */
-.cet-container ytmusic-app-layout.pip #volumeHud {
-  top: 22px !important;
+/* show the player bar (classic or new) while the mouse is over the window.
+   In full screen, YTM shows it only when the mouse moves over a video, so never
+   on song-only tracks, and keeps it under the player page */
+ytmusic-app-layout.pip:hover > [slot='player-bar'] {
+  visibility: visible !important;
+  opacity: 1 !important;
+  z-index: 7 !important;
 }
 
-/* make player-bar not draggable if in-app-menu is enabled */
-.cet-container ytmusic-app-layout.pip ytmusic-player-bar {
-  -webkit-app-region: no-drag !important;
+/* the title bar is hidden in PiP: make the top edge drag the window, and keep
+   the rest of the player free for the mouse */
+ytmusic-app-layout.pip::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  z-index: 1000;
+  -webkit-app-region: drag;
 }
 
-/* make player draggable if in-app-menu is enabled */
-.cet-container ytmusic-app-layout.pip #player {
-  -webkit-app-region: drag !important;
+/* make the player fill the window. In full screen, YTM centers a video on the
+   player page's panel, which is shorter than the window and pushes the video
+   up. The black fills the sides of song-only tracks' artwork */
+ytmusic-app-layout.pip #player {
+  top: 0;
+  height: 100vh;
+  transform: none;
+  background-color: black;
 }
 
 /* remove info, thumbnail and menu from player-bar */
@@ -40,4 +57,12 @@ ytmusic-app-layout.pip ytmusic-player-bar ytmusic-menu-renderer {
 /* disable the video-toggle button when in PiP mode */
 ytmusic-app-layout.pip .video-switch-button {
   display: none !important;
+}
+
+/* size the menu entry's icon like YTM's own. The shared .ytmd-menu-item rules
+   come with the downloader plugin, so they are missing when it is disabled */
+.ytmd-pip-menu-item .icon.ytmd-menu-item {
+  flex: none;
+  width: 18px;
+  height: 18px;
 }
