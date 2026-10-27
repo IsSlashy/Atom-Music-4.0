@@ -17,6 +17,14 @@ files:
   - '!node_modules/**/*.ts'
 asarUnpack:
   - assets
+# Chromium locales to ship: the app is translated to English and French only.
+# Chromium picks its locale (and the language YouTube Music answers in) among
+# these, so other system languages fall back to English. On macOS the English
+# folder is en.lproj, hence 'en' next to 'en-US'.
+electronLanguages:
+  - en
+  - en-US
+  - fr
 mac:
   identity: null
   target:
