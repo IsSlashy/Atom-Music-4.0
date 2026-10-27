@@ -16,18 +16,24 @@ const loadedPluginMap: Record<
   PluginDef<unknown, unknown, unknown>
 > = {};
 
-// ipcMain listeners each plugin added through ctx.ipc.on. They are removed
-// when the plugin unloads, so enabling it again does not run them twice.
+// ipcMain listeners and handlers each plugin added through ctx.ipc. They are
+// removed when the plugin unloads, so a disabled plugin stops answering and
+// enabling it again neither runs listeners twice nor fails on its handlers.
 const pluginIpcListeners: Record<
   string,
   [string, (event: Electron.IpcMainEvent, ...args: unknown[]) => void][]
 > = {};
+const pluginIpcHandlers: Record<string, string[]> = {};
 
-const removePluginIpcListeners = (id: string) => {
+const removePluginIpc = (id: string) => {
   for (const [event, listener] of pluginIpcListeners[id] ?? []) {
     ipcMain.removeListener(event, listener);
   }
+  for (const event of pluginIpcHandlers[id] ?? []) {
+    ipcMain.removeHandler(event);
+  }
   delete pluginIpcListeners[id];
+  delete pluginIpcHandlers[id];
 };
 
 const createContext = (
@@ -54,6 +60,7 @@ const createContext = (
     handle: (event: string, listener: CallableFunction) => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-return,@typescript-eslint/no-unsafe-call
       ipcMain.handle(event, (_, ...args: unknown[]) => listener(...args));
+      (pluginIpcHandlers[id] ??= []).push(event);
     },
     on: (event: string, listener: CallableFunction) => {
       const wrapped = (_: Electron.IpcMainEvent, ...args: unknown[]) => {
@@ -90,7 +97,7 @@ export const forceUnloadMainPlugin = async (
         plugin.backend)
     ) {
       delete loadedPluginMap[id];
-      removePluginIpcListeners(id);
+      removePluginIpc(id);
       console.log(
         LoggerPrefix,
         t('common.console.plugins.unloaded', { pluginName: id }),
