@@ -1,4 +1,4 @@
-import { type BrowserWindow, ipcMain, nativeImage, net } from 'electron';
+import { app, type BrowserWindow, ipcMain, nativeImage, net } from 'electron';
 
 import { Mutex } from 'async-mutex';
 
@@ -60,6 +60,78 @@ export const getImage = async (src: string): Promise<Electron.NativeImage> => {
   return output;
 };
 
+// Used for options.resumeOnStart. The saved `url` is the current track's watch
+// URL with its position in `t`, and YouTube Music starts the track there when
+// the app loads that URL at launch. The position is saved every few seconds of
+// playback, on pause and on quit.
+const RESUME_SAVE_STEP_SECONDS = 5;
+let resumeUrl: URL | null = null;
+let resumeSeconds = 0;
+let savedResumeSeconds = 0;
+
+// The URL is rebuilt on YouTube Music from the video and playlist ids only,
+// since the main process loads it at launch and it comes from the page.
+const toResumeUrl = (rawUrl: string | undefined, fallbackList?: string) => {
+  const source = rawUrl ? URL.parse(rawUrl) : null;
+  const videoId = source?.searchParams.get('v');
+  if (!videoId) return null;
+
+  const url = new URL('https://music.youtube.com/watch');
+  url.searchParams.set('v', videoId);
+  const list = source?.searchParams.get('list') || fallbackList;
+  if (list) url.searchParams.set('list', list);
+  return url;
+};
+
+const saveResumeUrl = () => {
+  if (!resumeUrl) return;
+
+  const url = new URL(resumeUrl);
+  if (
+    resumeSeconds >= RESUME_SAVE_STEP_SECONDS &&
+    config.get('options.resumeOnStart')
+  ) {
+    url.searchParams.set('t', String(resumeSeconds));
+  }
+  config.set('url', url.toString());
+  savedResumeSeconds = resumeSeconds;
+};
+
+const setResumeTrack = (canonicalUrl: string | undefined) => {
+  // A track inserted into the queue ("Play next", "Add to queue") comes
+  // without the queue's playlist. Keep the previous track's, or a relaunch
+  // would start a new radio from this track instead of the queue.
+  const url = toResumeUrl(
+    canonicalUrl,
+    resumeUrl?.searchParams.get('list') ?? undefined,
+  );
+  if (!url) return;
+
+  // The same track again (the one restored at launch, a reload) keeps its
+  // position.
+  if (url.searchParams.get('v') !== resumeUrl?.searchParams.get('v')) {
+    resumeSeconds = 0;
+  }
+  resumeUrl = url;
+  saveResumeUrl();
+};
+
+const updateResumePosition = (seconds: number) => {
+  resumeSeconds = seconds;
+  // Skips the first seconds of a track: right after a track change they can
+  // belong to the next track, before its 'ytmd:video-src-changed' arrives.
+  if (
+    seconds >= RESUME_SAVE_STEP_SECONDS &&
+    Math.abs(seconds - savedResumeSeconds) >= RESUME_SAVE_STEP_SECONDS &&
+    config.get('options.resumeOnStart')
+  ) {
+    saveResumeUrl();
+  }
+};
+
+const isValidSeconds = (seconds: unknown): seconds is number =>
+  typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0;
+
 const handleData = async (
   data: GetPlayerResponse,
   win: Electron.BrowserWindow,
@@ -98,8 +170,7 @@ const handleData = async (
     if (microformat.pageOwnerDetails?.externalChannelId) {
       songInfo.artistUrl = `https://music.youtube.com/channel/${microformat.pageOwnerDetails.externalChannelId}`;
     }
-    // Used for options.resumeOnStart
-    config.set('url', microformat.urlCanonical);
+    setResumeTrack(microformat.urlCanonical);
     songInfo.alternativeTitle = microformat.linkAlternates.find(
       (link) => link.title,
     )?.title;
@@ -192,6 +263,31 @@ const registerProvider = (win: BrowserWindow) => {
   const dataMutex = new Mutex();
   let songInfo: SongInfo | null = null;
 
+  // The launch loads the saved track, which keeps its position and playlist
+  // until the page reports it.
+  if (config.get('options.resumeOnStart')) {
+    const savedUrl = config.get('url');
+    resumeUrl = toResumeUrl(savedUrl);
+    const savedSeconds = Number(URL.parse(savedUrl)?.searchParams.get('t'));
+    if (resumeUrl && isValidSeconds(savedSeconds)) {
+      resumeSeconds = savedResumeSeconds = Math.floor(savedSeconds);
+    }
+  }
+
+  // The page sends the position only once asked, as for the plugins using it.
+  ipcMain.on('ytmd:player-api-loaded', (event) => {
+    event.sender.send('ytmd:setup-time-changed-listener');
+  });
+
+  app.on('before-quit', () => {
+    if (
+      resumeSeconds !== savedResumeSeconds &&
+      config.get('options.resumeOnStart')
+    ) {
+      saveResumeUrl();
+    }
+  });
+
   // This will be called when the song-info-front finds a new request with song data
   ipcMain.on('ytmd:video-src-changed', async (_, data: GetPlayerResponse) => {
     const tempSongInfo = await dataMutex.runExclusive<SongInfo | null>(
@@ -216,6 +312,15 @@ const registerProvider = (win: BrowserWindow) => {
         elapsedSeconds,
       }: { isPaused: boolean; elapsedSeconds: number },
     ) => {
+      if (
+        isPaused &&
+        isValidSeconds(elapsedSeconds) &&
+        config.get('options.resumeOnStart')
+      ) {
+        resumeSeconds = Math.floor(elapsedSeconds);
+        saveResumeUrl();
+      }
+
       const tempSongInfo = await dataMutex.runExclusive<SongInfo | null>(() => {
         if (!songInfo) {
           return null;
@@ -236,6 +341,8 @@ const registerProvider = (win: BrowserWindow) => {
   );
 
   ipcMain.on('ytmd:time-changed', async (_, seconds: number) => {
+    if (isValidSeconds(seconds)) updateResumePosition(Math.floor(seconds));
+
     const tempSongInfo = await dataMutex.runExclusive<SongInfo | null>(() => {
       if (!songInfo) {
         return null;

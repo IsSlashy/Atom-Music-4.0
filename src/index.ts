@@ -956,9 +956,16 @@ async function createMainWindow() {
     win.setAlwaysOnTop(true);
   }
 
-  const urlToLoad = config.get('options.resumeOnStart')
-    ? config.get('url')
-    : config.defaultConfig.url;
+  // The saved url resumes the last track at its position (`t`, see the
+  // song-info provider). It comes from the page, so only a YouTube Music page
+  // is loaded from it.
+  const savedUrl = URL.parse(config.get('url'));
+  const urlToLoad =
+    config.get('options.resumeOnStart') &&
+    savedUrl?.protocol === 'https:' &&
+    savedUrl.hostname === 'music.youtube.com'
+      ? savedUrl.toString()
+      : config.defaultConfig.url;
   win.on('closed', onClosed);
 
   // Detached picture-in-picture moves and resizes this window, and the plugin
