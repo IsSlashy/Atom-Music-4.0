@@ -1,9 +1,9 @@
 import { type BrowserWindow, ipcMain } from 'electron';
 
-import { deepmerge } from 'deepmerge-ts';
 import { allPlugins, mainPlugins } from 'virtual:plugins';
 
 import * as config from '@/config';
+import { mergePluginConfig } from '@/config/plugins';
 import { LoggerPrefix, startPlugin, stopPlugin } from '@/utils';
 
 import { t } from '@/i18n';
@@ -21,7 +21,7 @@ const createContext = (
   win: BrowserWindow,
 ): BackendContext<PluginConfig> => ({
   getConfig: async () =>
-    deepmerge(
+    mergePluginConfig(
       (await allPlugins())[id].config ?? { enabled: false },
       config.get(`plugins.${id}`) ?? {},
     ) as PluginConfig,
@@ -138,7 +138,10 @@ export const loadAllMainPlugins = async (win: BrowserWindow) => {
   const queue: Promise<void>[] = [];
 
   for (const [plugin, pluginDef] of Object.entries(await mainPlugins())) {
-    const config = deepmerge(pluginDef.config, pluginConfigs[plugin] ?? {});
+    const config = mergePluginConfig(
+      pluginDef.config,
+      pluginConfigs[plugin] ?? {},
+    );
     if (config.enabled) {
       queue.push(forceLoadMainPlugin(plugin, win));
     } else if (loadedPluginMap[plugin]) {

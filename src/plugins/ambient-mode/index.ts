@@ -37,11 +37,14 @@ export default createPlugin({
     unregister: null as (() => void) | null,
     update: null as (() => void) | null,
     interval: null as NodeJS.Timeout | null,
+    observer: null as MutationObserver | null,
+    isStarted: false,
     lastMediaType: null as 'video' | 'image' | null,
     lastVideoSource: null as string | null,
     lastImageSource: null as string | null,
 
     async start({ getConfig }) {
+      this.isStarted = true;
       const config = await getConfig();
       this.interpolationTime = config.interpolationTime;
       this.buffer = config.buffer;
@@ -59,6 +62,8 @@ export default createPlugin({
       const video = await waitForElement<HTMLVideoElement>(
         '.html5-video-container > video',
       );
+      // The plugin may have been disabled while waiting for the video
+      if (!this.isStarted) return;
 
       const videoWrapper = document.querySelector(
         '#song-video > .player-wrapper',
@@ -181,9 +186,10 @@ export default createPlugin({
         const onPause = () => stopLoop();
         const onPlay = () => startLoop();
 
-        songVideo.addEventListener('pause', onPause);
-        songVideo.addEventListener('play', onPlay);
-        startLoop();
+        // Media events do not bubble, so listen on the video itself
+        video.addEventListener('pause', onPause);
+        video.addEventListener('play', onPlay);
+        if (!video.paused) startLoop();
 
         /* injecting */
         videoWrapper.prepend(blurCanvas);
@@ -192,8 +198,8 @@ export default createPlugin({
         return () => {
           stopLoop();
 
-          songVideo.removeEventListener('pause', onPause);
-          songVideo.removeEventListener('play', onPlay);
+          video.removeEventListener('pause', onPause);
+          video.removeEventListener('play', onPlay);
 
           if (blurCanvas.isConnected) blurCanvas.remove();
         };
@@ -217,15 +223,19 @@ export default createPlugin({
       const injectBlurElement = (force?: boolean): boolean | void => {
         const isPageOpen = ytmusicAppLayout?.hasAttribute('player-page-open');
         if (isPageOpen) {
+          // isVideoMode() overwrites lastMediaType, so read it first
+          const previousMediaType = this.lastMediaType;
           const isVideo = isVideoMode();
           if (!force) {
             if (
-              this.lastMediaType === 'video' &&
+              previousMediaType === 'video' &&
+              isVideo &&
               this.lastVideoSource === video?.src
             )
               return false;
             if (
-              this.lastMediaType === 'image' &&
+              previousMediaType === 'image' &&
+              !isVideo &&
               this.lastImageSource === image?.src
             )
               return false;
@@ -236,11 +246,14 @@ export default createPlugin({
         } else {
           this.unregister?.();
           this.unregister = null;
+          // Nothing is injected anymore, so reopening must inject again
+          this.lastMediaType = null;
         }
       };
 
       /* needed for switching between different views (e.g. miniplayer) */
-      const observer = new MutationObserver((mutationsList) => {
+      this.observer?.disconnect();
+      this.observer = new MutationObserver((mutationsList) => {
         for (const mutation of mutationsList) {
           if (mutation.type === 'attributes') {
             injectBlurElement(true);
@@ -250,12 +263,14 @@ export default createPlugin({
       });
 
       if (playerPage) {
-        observer.observe(playerPage, { attributes: true });
+        this.observer.observe(playerPage, { attributes: true });
 
         /* fallback ticker for when the observer isn't triggered */
         if (this.interval) clearInterval(this.interval);
         this.interval = setInterval(injectBlurElement, 1000);
       }
+
+      injectBlurElement();
     },
     onConfigChange(newConfig) {
       this.interpolationTime = newConfig.interpolationTime;
@@ -269,9 +284,18 @@ export default createPlugin({
       this.update?.();
     },
     stop() {
+      this.isStarted = false;
       this.update = null;
       this.unregister?.();
+      this.unregister = null;
+      this.observer?.disconnect();
+      this.observer = null;
       if (this.interval) clearInterval(this.interval);
+      this.interval = null;
+      // Forget what was injected, so a later start() injects again
+      this.lastMediaType = null;
+      this.lastVideoSource = null;
+      this.lastImageSource = null;
     },
   },
 });
