@@ -33,6 +33,10 @@ export const colors = {
   // sidebar) sits on a more opaque backdrop and reaches readable contrast
   // regardless of the underlying page content.
   glassBg: 'rgba(0, 0, 0, 0.55)',
+  // M12: near-opaque fill for surfaces that never leave the screen (player
+  // bar, sidebar) and for menus when the OS asks for reduced transparency.
+  // backdrop-filter on those surfaces re-blurred the page on every scroll frame.
+  surfaceBg: 'rgba(3, 3, 3, 0.94)',
   glassBorder: 'rgba(255, 255, 255, 0.1)',
   glassBorderHover: 'rgba(255, 255, 255, 0.18)',
   sidebarItemHover: 'rgba(255, 255, 255, 0.06)',
@@ -100,8 +104,9 @@ export const glass = {
   // THM-03: blur radii capped at 12-16px. Larger radii (20-40px) on wide /
   // permanent containers caused GPU stutter on resize. 16px keeps the glass
   // look while staying cheap to composite.
+  // M12: only menus and tooltips still use it, and only when the OS does not
+  // ask for reduced transparency. Always-visible surfaces use colors.surfaceBg.
   blur: 'blur(16px) saturate(180%)',
-  blurLight: 'blur(12px) saturate(150%)',
 } as const;
 
 export const layout = {
