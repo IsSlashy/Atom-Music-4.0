@@ -35,14 +35,8 @@ const resolveAlias = {
 // to parse. Its CommonJS build keeps that `require` inside the module wrapper.
 const fflateNode = createRequire(import.meta.url).resolve('fflate');
 
-// Vite 8 follows Node for CommonJS interop: a default import of a CommonJS
-// module that sets __esModule now gets module.exports instead of its default
-// export. The app's imports (enhanceWebRequest among them) expect the old way.
-const legacy = { inconsistentCjsInterop: true };
-
 export default defineConfig(({ mode }) => ({
   main: {
-    legacy,
     plugins: [
       pluginLoader('backend'),
       pluginStubLoader(),
@@ -100,7 +94,6 @@ export default defineConfig(({ mode }) => ({
     },
   } satisfies MainViteConfig,
   preload: {
-    legacy,
     plugins: [
       pluginLoader('preload'),
       viteResolve({
@@ -139,7 +132,6 @@ export default defineConfig(({ mode }) => ({
     },
   } satisfies PreloadViteConfig,
   renderer: {
-    legacy,
     plugins: [
       pluginLoader('renderer'),
       viteResolve({

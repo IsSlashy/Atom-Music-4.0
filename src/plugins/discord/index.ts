@@ -1,4 +1,4 @@
-import { StatusDisplayType } from 'discord-api-types/v10';
+import type { StatusDisplayType } from 'discord-api-types/v10';
 
 import { createPlugin } from '@/utils';
 import { backend } from './main';
@@ -53,7 +53,9 @@ export default createPlugin({
     playOnYouTubeMusic: true,
     hideGitHubButton: false,
     hideDurationLeft: false,
-    statusDisplayType: StatusDisplayType.Details,
+    // StatusDisplayType.Details, written as its value so that loading this
+    // file does not load discord-api-types while the plugin is disabled
+    statusDisplayType: 2,
   } as DiscordPluginConfig,
   menu: onMenu,
   backend,

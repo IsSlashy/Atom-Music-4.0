@@ -4,7 +4,8 @@ import fs, { promises } from 'node:fs';
 import { createRequire } from 'node:module';
 
 import { ElectronBlocker } from '@ghostery/adblocker-electron';
-import enhanceWebRequest, {
+import {
+  enhanceWebRequest,
   type BetterSession,
 } from '@jellybrick/electron-better-web-request';
 import { app, ipcMain, net } from 'electron';

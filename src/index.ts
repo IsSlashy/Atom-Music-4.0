@@ -15,7 +15,8 @@ import {
   protocol,
   type BrowserWindowConstructorOptions,
 } from 'electron';
-import enhanceWebRequest, {
+import {
+  enhanceWebRequest,
   type BetterSession,
 } from '@jellybrick/electron-better-web-request';
 import is from 'electron-is';
@@ -1396,6 +1397,17 @@ app.whenReady().then(async () => {
           ) as ReadableStream<Uint8Array>);
     return new Response(body, { status: range ? 206 : 200, headers });
   });
+
+  // Only the English and French Chromium locales ship, so Chromium falls back
+  // to one of them on other systems. Send the system languages instead, so
+  // that YouTube Music keeps the user's language.
+  const systemLanguages = app.getPreferredSystemLanguages();
+  if (systemLanguages.length > 0) {
+    session.defaultSession.setUserAgent(
+      session.defaultSession.getUserAgent(),
+      systemLanguages.join(','),
+    );
+  }
 
   if (!config.get('options.language')) {
     const locale = await getDefaultLocale(app.getLocale());
