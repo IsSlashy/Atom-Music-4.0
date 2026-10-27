@@ -1,9 +1,11 @@
 import {
+  createEffect,
   createMemo,
   createResource,
   createSignal,
   ErrorBoundary,
   For,
+  on,
   Show,
 } from 'solid-js';
 import { css } from 'solid-styled-components';
@@ -11,6 +13,7 @@ import { css } from 'solid-styled-components';
 import { SettingsSection } from './SettingsSection';
 import { cacheNoArgs } from '@/providers/decorators';
 import { ErrorDisplay } from '@/plugins/utils/renderer';
+import { t } from '@/i18n';
 
 import type { PluginMeta } from '../types';
 
@@ -30,12 +33,20 @@ const overlayStyle = cacheNoArgs(
     align-items: flex-start;
     padding-top: 40px;
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
-    transition: opacity 200ms ease;
+    /* Hide only once the fade-out has finished */
+    transition:
+      opacity 200ms ease,
+      visibility 0s linear 200ms;
 
     &[data-open='true'] {
       opacity: 1;
+      visibility: visible;
       pointer-events: all;
+      transition:
+        opacity 200ms ease,
+        visibility 0s linear 0s;
     }
 
     @media (max-width: 600px) {
@@ -59,6 +70,10 @@ const panelStyle = cacheNoArgs(
     transition:
       transform 200ms ease,
       opacity 200ms ease;
+
+    &:focus {
+      outline: none;
+    }
 
     [data-open='true'] > & {
       transform: scale(1) translateY(0);
@@ -172,8 +187,17 @@ const shortcutHintStyle = cacheNoArgs(
   `,
 );
 
+const titleId = 'ytmd-settings-title';
+
+const focusableSelector =
+  'button, input, select, textarea, [href], [tabindex]:not([tabindex="-1"])';
+
 export const SettingsPage = (props: SettingsPageProps) => {
   const [search, setSearch] = createSignal('');
+  const [panel, setPanel] = createSignal<HTMLDivElement>();
+  const [searchInput, setSearchInput] = createSignal<HTMLInputElement>();
+  // Focused again when the dialog closes
+  let returnFocusTo: HTMLElement | null = null;
 
   const [plugins] = createResource(
     () => props.open(),
@@ -202,15 +226,76 @@ export const SettingsPage = (props: SettingsPageProps) => {
     if (e.target === e.currentTarget) props.onClose();
   };
 
+  // Move focus into the dialog on open and back to where it was on close.
+  // Runs after the render effects, so `inert` is already up to date.
+  createEffect(
+    on(
+      () => props.open(),
+      (open) => {
+        const active = document.activeElement;
+        if (open) {
+          returnFocusTo =
+            active instanceof HTMLElement && active !== document.body
+              ? active
+              : null;
+          searchInput()?.focus();
+          return;
+        }
+
+        if (
+          returnFocusTo?.isConnected &&
+          (!active || active === document.body || panel()?.contains(active))
+        ) {
+          returnFocusTo.focus();
+        }
+        returnFocusTo = null;
+      },
+      { defer: true },
+    ),
+  );
+
+  // Keep Tab and Shift+Tab inside the dialog
+  const trapFocus = (e: KeyboardEvent) => {
+    const dialog = panel();
+    if (e.key !== 'Tab' || !dialog) return;
+
+    const focusable = [
+      ...dialog.querySelectorAll<HTMLElement>(focusableSelector),
+    ].filter((el) => !el.matches(':disabled') && el.checkVisibility());
+    if (focusable.length === 0) return;
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === dialog)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
     <div
       class={overlayStyle()}
       data-open={props.open()}
+      inert={!props.open()}
       onClick={handleOverlayClick}
     >
-      <div class={panelStyle()}>
+      <div
+        aria-labelledby={titleId}
+        aria-modal="true"
+        class={panelStyle()}
+        on:keydown={trapFocus}
+        ref={setPanel}
+        role="dialog"
+        tabindex="-1"
+      >
         <div class={headerStyle()}>
-          <h2 class={titleStyle()}>Settings</h2>
+          <h2 class={titleStyle()} id={titleId}>
+            {t('plugins.settings-page.templates.title')}
+          </h2>
           <div
             style={{
               'display': 'flex',
@@ -220,27 +305,32 @@ export const SettingsPage = (props: SettingsPageProps) => {
           >
             <span class={shortcutHintStyle()}>Ctrl+,</span>
             <button
-              aria-label={'Close settings'}
+              aria-label={t('plugins.settings-page.templates.close')}
               class={closeButtonStyle()}
-              onClick={props.onClose}
+              onClick={() => props.onClose()}
             >
               {'✕'}
             </button>
           </div>
         </div>
         <input
-          aria-label={'Search plugins'}
+          aria-label={t('plugins.settings-page.templates.search')}
           class={searchStyle()}
           onInput={(e) => setSearch(e.currentTarget.value)}
-          placeholder="Search plugins..."
+          placeholder={t('plugins.settings-page.templates.search-placeholder')}
+          ref={setSearchInput}
           type="search"
           value={search()}
         />
         <div class={contentStyle()}>
           <ErrorBoundary
-            fallback={(err) => (
+            fallback={(err: unknown) => (
               <ErrorDisplay
-                message={err?.message ?? 'Failed to load settings'}
+                message={
+                  err instanceof Error
+                    ? err.message
+                    : t('plugins.settings-page.templates.error')
+                }
               />
             )}
           >
@@ -248,10 +338,14 @@ export const SettingsPage = (props: SettingsPageProps) => {
               {(plugin) => <SettingsSection plugin={plugin} />}
             </For>
             <Show when={filteredPlugins()?.length === 0 && !plugins.loading}>
-              <p class={emptyStyle()}>No plugins match your search.</p>
+              <p class={emptyStyle()}>
+                {t('plugins.settings-page.templates.empty')}
+              </p>
             </Show>
             <Show when={plugins.loading}>
-              <p class={emptyStyle()}>Loading plugins...</p>
+              <p class={emptyStyle()}>
+                {t('plugins.settings-page.templates.loading')}
+              </p>
             </Show>
           </ErrorBoundary>
         </div>

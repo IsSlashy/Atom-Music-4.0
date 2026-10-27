@@ -132,6 +132,7 @@
             }
           },
           "resume-on-start": "Resume last song when app starts",
+          "settings": "Settings",
           "single-instance-lock": "Single Instance Lock",
           "start-at-login": "Start at login",
           "starting-page": {
@@ -377,7 +378,7 @@
         "can-not-update-progress": "Cannot update progress"
       },
       "templates": {
-        "button": "Download"
+        "button": "Download as MP3"
       }
     },
     "in-app-menu": {
@@ -469,6 +470,20 @@
           "label": "Choose Volume Increase/Decrease Steps",
           "title": "Volume Steps"
         }
+      }
+    },
+    "settings-page": {
+      "description": "Centralized settings page for all plugins",
+      "name": "Settings",
+      "templates": {
+        "close": "Close settings",
+        "empty": "No plugins match your search.",
+        "error": "Failed to load settings",
+        "loading": "Loading plugins...",
+        "restart": "restart",
+        "search": "Search plugins",
+        "search-placeholder": "Search plugins...",
+        "title": "Settings"
       }
     },
     "shortcuts": {

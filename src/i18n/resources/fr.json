@@ -132,6 +132,7 @@
             }
           },
           "resume-on-start": "Reprendre la dernière chanson quand l'application démarre",
+          "settings": "Réglages",
           "single-instance-lock": "Verrouillage d'instance unique",
           "start-at-login": "Démarrer à la connexion",
           "starting-page": {
@@ -343,7 +344,7 @@
           "playlist-id-not-found": "Aucun ID de liste de lecture trouvé",
           "playlist-is-empty": "La liste de lecture est vide",
           "playlist-is-mix-or-private": "Erreur lors de l'obtention des informations sur la liste de lecture : assurez-vous qu'il ne s'agit pas d'une liste privée ou \"Mixée pour vous\"\n\n{{error}}",
-          "preparing-file": "Péparer des fichier…",
+          "preparing-file": "Préparation des fichiers…",
           "saving": "Sauvegarde…",
           "trying-to-get-playlist-id": "Obtention de l'ID de la liste de lecture : {{playlistId}}",
           "video-id-not-found": "Vidéo non trouvée",
@@ -377,7 +378,7 @@
         "can-not-update-progress": "Impossible de mettre à jour la progression"
       },
       "templates": {
-        "button": "Télécharger"
+        "button": "Télécharger en MP3"
       }
     },
     "in-app-menu": {
@@ -469,6 +470,20 @@
           "label": "Choisissez les étapes d'augmentation/diminution du volume",
           "title": "Étapes de volume"
         }
+      }
+    },
+    "settings-page": {
+      "description": "Page de réglages centralisée pour toutes les extensions",
+      "name": "Réglages",
+      "templates": {
+        "close": "Fermer les réglages",
+        "empty": "Aucune extension ne correspond à la recherche.",
+        "error": "Impossible de charger les réglages",
+        "loading": "Chargement des extensions…",
+        "restart": "redémarrage requis",
+        "search": "Rechercher une extension",
+        "search-placeholder": "Rechercher une extension…",
+        "title": "Réglages"
       }
     },
     "shortcuts": {

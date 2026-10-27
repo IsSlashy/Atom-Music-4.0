@@ -3,6 +3,7 @@ import { css } from 'solid-styled-components';
 
 import { SettingControl } from './SettingControl';
 import { cacheNoArgs } from '@/providers/decorators';
+import { t } from '@/i18n';
 
 import type { PluginMeta } from '../types';
 
@@ -167,7 +168,9 @@ export const SettingsSection = (props: SettingsSectionProps) => {
           <div style={{ 'display': 'flex', 'align-items': 'center' }}>
             <span class={nameStyle()}>{props.plugin.name}</span>
             <Show when={props.plugin.restartNeeded}>
-              <span class={restartBadgeStyle()}>restart</span>
+              <span class={restartBadgeStyle()}>
+                {t('plugins.settings-page.templates.restart')}
+              </span>
             </Show>
             <Show when={hasConfig()}>
               <svg
