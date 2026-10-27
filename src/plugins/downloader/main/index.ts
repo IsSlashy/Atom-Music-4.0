@@ -1,16 +1,28 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import vm from 'node:vm';
 
-import { app, type BrowserWindow, dialog, ipcMain } from 'electron';
-import { Innertube, UniversalCache, Utils, YTNodes, Platform } from 'youtubei.js';
+import {
+  app,
+  type BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeImage,
+  net,
+} from 'electron';
+import {
+  Innertube,
+  UniversalCache,
+  Utils,
+  YTNodes,
+  Platform,
+} from 'youtubei.js';
 import is from 'electron-is';
 import filenamify from 'filenamify';
 import { Mutex } from 'async-mutex';
 import * as NodeID3 from 'node-id3';
 import { BG, type BgConfig } from 'bgutils-js';
-import { lazy } from 'lazy-var';
 
 import {
   cropMaxWidth,
@@ -21,7 +33,6 @@ import {
 import {
   registerCallback,
   cleanupName,
-  getImage,
   MediaType,
   type SongInfo,
   SongInfoEvent,
@@ -32,6 +43,7 @@ import { t } from '@/i18n';
 import { DefaultPresetList, type Preset, YoutubeFormatList } from '../types';
 
 import type { DownloaderPluginConfig } from '../index';
+import type { FFmpeg } from '@ffmpeg.wasm/main';
 import type { BackendContext } from '@/types/contexts';
 import type { GetPlayerResponse } from '@/types/get-player-response';
 import type { FormatOptions } from 'node_modules/youtubei.js/dist/src/types';
@@ -44,11 +56,91 @@ import type {
 
 type CustomSongInfo = SongInfo & { trackId?: string };
 
-const ffmpeg = lazy(async () => {
-  const { FFmpeg } = await import('@ffmpeg.wasm/main');
-  return FFmpeg.create({ log: false });
-});
+// The wasm heap only grows, so an instance left idle this long is unloaded
+const FFMPEG_IDLE_UNLOAD_MS = 60_000;
+// Progress goes to the renderer over IPC: about 4 messages per second is enough
+const FEEDBACK_INTERVAL_MS = 250;
+
+class FFmpegTimeoutError extends Error {}
+
+let ffmpegInstance: FFmpeg | null = null;
+let ffmpegIdleTimer: ReturnType<typeof setTimeout> | undefined;
 const ffmpegMutex = new Mutex();
+
+const getFFmpeg = async () => {
+  clearTimeout(ffmpegIdleTimer);
+  if (!ffmpegInstance) {
+    const { createFFmpeg } = await import('@ffmpeg.wasm/main');
+    const instance = createFFmpeg({
+      log: false,
+      logger() {}, // Console.log,
+      progress() {}, // Console.log,
+    });
+    await instance.load();
+    ffmpegInstance = instance;
+  }
+  return ffmpegInstance;
+};
+
+// A command that timed out may be stuck inside the wasm, where exit() could
+// block the main process, so that instance is only dropped
+const disposeFFmpeg = (exit: boolean) => {
+  clearTimeout(ffmpegIdleTimer);
+  const instance = ffmpegInstance;
+  ffmpegInstance = null;
+  if (exit) {
+    try {
+      instance?.exit();
+    } catch {
+      // Already exited
+    }
+  }
+};
+
+const scheduleFFmpegUnload = () => {
+  clearTimeout(ffmpegIdleTimer);
+  ffmpegIdleTimer = setTimeout(
+    () => disposeFFmpeg(true),
+    FFMPEG_IDLE_UNLOAD_MS,
+  );
+};
+
+const runFFmpeg = async (
+  instance: FFmpeg,
+  timeoutMs: number,
+  args: string[],
+) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      instance.run(...args),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new FFmpegTimeoutError(
+                `ffmpeg did not finish within ${Math.round(timeoutMs / 1000)} s`,
+              ),
+            ),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+// Returns true at most once per FEEDBACK_INTERVAL_MS
+const createFeedbackThrottle = () => {
+  let last = 0;
+  return () => {
+    const now = Date.now();
+    if (now - last < FEEDBACK_INTERVAL_MS) return false;
+    last = now;
+    return true;
+  };
+};
 
 let yt: Innertube;
 let win: BrowserWindow;
@@ -98,6 +190,51 @@ const sendError = (error: Error, source?: string) => {
   });
 };
 
+let decipherChecked = false;
+
+// Deciphering breaks whenever YouTube ships a player the extractor cannot read.
+// Try it once on a dummy stream URL, so a broken player gives one clear error
+// before anything is downloaded, instead of one error per track.
+const checkDecipher = async () => {
+  if (decipherChecked) return;
+
+  try {
+    const player = yt.session.player;
+    if (!player) throw new Error('No player script');
+
+    const n = 'kXpRs3QeVbTz8LwN';
+    const streamUrl = `https://rr1---sn-check.googlevideo.com/videoplayback?expire=1&n=${n}`;
+    const signatureCipher = new URLSearchParams({
+      s: 'AOq0QJ8wRQIhAKmB3vYq7XcUuNdLr5sW2pEoGhTzF1aJ9kVbCyMe4fD6AiBxQ',
+      sp: 'sig',
+      url: streamUrl,
+    }).toString();
+
+    const deciphered = new URL(
+      await player.decipher(undefined, signatureCipher),
+    ).searchParams;
+    const nResult = deciphered.get('n');
+    if (
+      !deciphered.get('sig') ||
+      !nResult ||
+      nResult === n ||
+      nResult.startsWith('enhanced_except_')
+    ) {
+      throw new Error(`Player ${player.player_id} returned n=${nResult}`);
+    }
+  } catch (error: unknown) {
+    throw new Error(
+      t('plugins.downloader.backend.feedback.decipher-failed', {
+        defaultValue:
+          'Downloads cannot decipher the current YouTube player. The downloader needs an update.',
+      }),
+      { cause: error },
+    );
+  }
+
+  decipherChecked = true;
+};
+
 export const getCookieFromWindow = async (win: BrowserWindow) => {
   return (
     await win.webContents.session.cookies.get({
@@ -106,6 +243,21 @@ export const getCookieFromWindow = async (win: BrowserWindow) => {
   )
     .map((it) => it.name + '=' + it.value)
     .join(';');
+};
+
+// youtubei.js sends stream requests with an Origin header, which makes net.fetch
+// run a CORS check that googlevideo fails (net::ERR_FAILED), so it is dropped there
+const getStreamSafeFetch = (): typeof fetch => {
+  const netFetch = getNetFetchAsFetch();
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (init?.headers && url.hostname.endsWith('.googlevideo.com')) {
+      const headers = new Headers(init.headers);
+      headers.delete('origin');
+      init = { ...init, headers };
+    }
+    return netFetch(input, init);
+  }) as typeof fetch;
 };
 
 let config: DownloaderPluginConfig;
@@ -122,23 +274,18 @@ export const onMainLoad = async ({
     cache: new UniversalCache(false),
     cookie: await getCookieFromWindow(win),
     generate_session_locally: true,
-    fetch: getNetFetchAsFetch(),
+    fetch: getStreamSafeFetch(),
   });
 
-  // Provide JavaScript evaluator for URL deciphering (required since youtubei.js v16)
-  Platform.shim.eval = (data: { output: string; exported: string[] }, env: Record<string, string>) => {
-    // Execute the script + return exportedVars (const declaration doesn't return a value)
-    const exported = vm.runInNewContext(data.output + '\nexportedVars;', { globalThis: {} });
-    // Call the exported functions with the provided arguments
-    const result: Record<string, string> = {};
-    if (env.sig !== undefined && exported.sigFunction) {
-      result.sig = exported.sigFunction(env.sig);
-    }
-    if (env.n !== undefined && exported.nFunction) {
-      result.n = exported.nFunction(env.n);
-    }
-    return result;
-  };
+  // Provide JavaScript evaluator for URL deciphering (required since youtubei.js v16).
+  // The extracted player code ends with a `return`, so it runs wrapped in a function.
+  // This is not an isolation: the host URL constructor gives access to the host Function.
+  Platform.shim.eval = (data) =>
+    vm.runInNewContext(
+      '(function(){\n' + data.output + '\n})()',
+      { URL, URLSearchParams },
+      { timeout: 5000 },
+    ) as Record<string, unknown>;
 
   const requestKey = 'O43z0dpjhgX20SCx4KAo';
   const visitorData = yt.session.context.client.visitorData;
@@ -238,6 +385,7 @@ export async function downloadSongFromId(
   playlistFolder: string | undefined = undefined,
   trackId: string | undefined = undefined,
   increasePlaylistProgress: (value: number) => void = () => {},
+  skipExisting = false,
 ) {
   let resolvedName;
   try {
@@ -248,6 +396,7 @@ export async function downloadSongFromId(
       playlistFolder,
       trackId,
       increasePlaylistProgress,
+      skipExisting,
     );
   } catch (error: unknown) {
     sendError(error as Error, resolvedName || id);
@@ -281,8 +430,8 @@ function downloadSongOnFinishSetup({
         ) {
           downloadSong(
             currentUrl,
-            config.downloadOnFinish.folder ??
-              config.downloadFolder ??
+            config.downloadOnFinish.folder ||
+              config.downloadFolder ||
               defaultDownloadFolder,
           );
         } else if (
@@ -291,8 +440,8 @@ function downloadSongOnFinishSetup({
         ) {
           downloadSong(
             currentUrl,
-            config.downloadOnFinish.folder ??
-              config.downloadFolder ??
+            config.downloadOnFinish.folder ||
+              config.downloadFolder ||
               defaultDownloadFolder,
           );
         }
@@ -316,6 +465,7 @@ async function downloadSongUnsafe(
   playlistFolder: string | undefined = undefined,
   trackId: string | undefined = undefined,
   increasePlaylistProgress: (value: number) => void = () => {},
+  skipExisting = false,
 ) {
   const sendFeedback = (message: unknown, progress?: number) => {
     if (!playlistFolder) {
@@ -362,10 +512,9 @@ async function downloadSongUnsafe(
   setName(name);
 
   let playabilityStatus = info.playability_status;
-  let bypassedResult = null;
   if (playabilityStatus?.status === 'LOGIN_REQUIRED') {
     // Try to bypass the age restriction
-    bypassedResult = await getAndroidTvInfo(id);
+    const bypassedResult = await getAndroidTvInfo(id);
     playabilityStatus = bypassedResult.playability_status;
 
     if (playabilityStatus?.status === 'LOGIN_REQUIRED') {
@@ -404,7 +553,9 @@ async function downloadSongUnsafe(
   const format = info.chooseFormat(downloadOptions);
 
   let targetFileExtension: string;
-  if (!presetSetting?.extension) {
+  if (selectedPreset === 'Source') {
+    targetFileExtension = getSourceExtension(format);
+  } else if (!presetSetting?.extension) {
     targetFileExtension =
       YoutubeFormatList.find((it) => it.itag === format.itag)?.container ??
       'mp3';
@@ -421,10 +572,12 @@ async function downloadSongUnsafe(
   }
   const filePath = join(dir, filename);
 
-  if (config.skipExisting && existsSync(filePath)) {
+  if ((config.skipExisting || skipExisting) && existsSync(filePath)) {
     sendFeedback(null, -1);
     return;
   }
+
+  await checkDecipher();
 
   const stream = await info.download(downloadOptions);
 
@@ -438,11 +591,7 @@ async function downloadSongUnsafe(
 
   const iterableStream = Utils.streamToIterable(stream);
 
-  if (!existsSync(dir)) {
-    mkdirSync(dir);
-  }
-
-  let fileBuffer = await iterableStreamToProcessedUint8Array(
+  let fileBuffer: Uint8Array | null = await iterableStreamToProcessedUint8Array(
     iterableStream,
     targetFileExtension,
     metadata,
@@ -452,27 +601,51 @@ async function downloadSongUnsafe(
     increasePlaylistProgress,
   );
 
-  if (fileBuffer && targetFileExtension === 'mp3') {
-    fileBuffer = await writeID3(
+  // The cover is optional: a failed fetch must not cost the track
+  const coverBuffer = await getCoverJpeg(metadata.imageSrc ?? '').catch(
+    (error: unknown) => {
+      console.warn('[Downloader] Could not fetch the cover:', error);
+      return null;
+    },
+  );
+
+  if (targetFileExtension === 'mp3') {
+    fileBuffer = writeID3(
       Buffer.from(fileBuffer),
       metadata,
+      coverBuffer,
       sendFeedback,
     );
   }
 
   if (fileBuffer) {
+    // Created at the first write, so a failed download leaves no folder behind
+    mkdirSync(dir, { recursive: true });
     writeFileSync(filePath, fileBuffer);
+    // The library shows this cover without the network, whatever the format
+    if (coverBuffer) {
+      try {
+        writeFileSync(join(dir, `${parse(filename).name}.jpg`), coverBuffer);
+      } catch {
+        /* ignore cover write errors */
+      }
+    }
     // Save metadata JSON for the in-app player (thumbnail, duration, etc.)
     try {
       const metaPath = filePath + '.meta.json';
-      writeFileSync(metaPath, JSON.stringify({
-        title: metadata.title,
-        artist: metadata.artist,
-        album: metadata.album,
-        imageSrc: metadata.imageSrc,
-        videoId: metadata.videoId,
-      }));
-    } catch { /* ignore metadata write errors */ }
+      writeFileSync(
+        metaPath,
+        JSON.stringify({
+          title: metadata.title,
+          artist: metadata.artist,
+          album: metadata.album,
+          imageSrc: metadata.imageSrc,
+          videoId: metadata.videoId,
+        }),
+      );
+    } catch {
+      /* ignore metadata write errors */
+    }
   }
 
   sendFeedback(null, -1);
@@ -491,21 +664,30 @@ async function downloadChunks(
 ) {
   const chunks = [];
   let downloaded = 0;
+  const shouldSendFeedback = createFeedbackThrottle();
   for await (const chunk of stream) {
     downloaded += chunk.length;
     chunks.push(chunk);
-    const ratio = downloaded / contentLength;
-    const progress = Math.floor(ratio * 100);
-    sendFeedback(
-      t('plugins.downloader.backend.feedback.download-progress', {
-        percent: progress,
-      }),
-      ratio,
-    );
-    // 15% for download, 85% for conversion
-    // This is a very rough estimate, trying to make the progress bar look nice
-    increasePlaylistProgress(ratio * 0.15);
+    if (!shouldSendFeedback()) continue;
+
+    if (contentLength > 0) {
+      const ratio = Math.min(downloaded / contentLength, 1);
+      const progress = Math.floor(ratio * 100);
+      sendFeedback(
+        t('plugins.downloader.backend.feedback.download-progress', {
+          percent: progress,
+        }),
+        ratio,
+      );
+      // 15% for download, 85% for conversion
+      // This is a very rough estimate, trying to make the progress bar look nice
+      increasePlaylistProgress(ratio * 0.15);
+    } else {
+      // Unknown size: keep the progress bar indeterminate
+      sendFeedback(t('plugins.downloader.backend.feedback.downloading'), 2);
+    }
   }
+  increasePlaylistProgress(0.15);
   return chunks;
 }
 
@@ -517,65 +699,112 @@ async function iterableStreamToProcessedUint8Array(
   contentLength: number,
   sendFeedback: (str: string, value?: number) => void,
   increasePlaylistProgress: (value: number) => void = () => {},
-): Promise<Uint8Array | null> {
+): Promise<Uint8Array> {
   sendFeedback(t('plugins.downloader.backend.feedback.loading'), 2); // Indefinite progress bar after download
 
   const safeVideoName = randomBytes(32).toString('hex');
 
   return await ffmpegMutex.runExclusive(async () => {
-    try {
-      const ffmpegInstance = await ffmpeg.get();
+    sendFeedback(t('plugins.downloader.backend.feedback.preparing-file'));
+    const input = Buffer.concat(
+      await downloadChunks(
+        stream,
+        contentLength,
+        sendFeedback,
+        increasePlaylistProgress,
+      ),
+    );
 
-      sendFeedback(t('plugins.downloader.backend.feedback.preparing-file'));
-      ffmpegInstance.fs.writeFile(
-        safeVideoName,
-        Buffer.concat(
-          await downloadChunks(
-            stream,
-            contentLength,
-            sendFeedback,
-            increasePlaylistProgress,
-          ),
-        ),
-      );
+    const ffmpegInstance = await getFFmpeg();
+    try {
+      ffmpegInstance.FS('writeFile', safeVideoName, input);
 
       sendFeedback(t('plugins.downloader.backend.feedback.converting'));
 
-      const safeVideoNameWithExtension = `${safeVideoName}.${extension}`;
-      try {
-        await ffmpegInstance.run(
-          '-i',
-          safeVideoName,
-          ...presetFfmpegArgs,
-          ...getFFmpegMetadataArgs(metadata),
-          safeVideoNameWithExtension,
+      const shouldSendFeedback = createFeedbackThrottle();
+      ffmpegInstance.setProgress((progress) => {
+        // The duration line still carries the ratio of the previous command
+        if ('duration' in progress) return;
+        const { ratio } = progress;
+        if (!Number.isFinite(ratio) || !shouldSendFeedback()) return;
+        const clampedRatio = Math.min(Math.max(ratio, 0), 1);
+        sendFeedback(
+          t('plugins.downloader.backend.feedback.conversion-progress', {
+            percent: Math.floor(clampedRatio * 100),
+          }),
+          clampedRatio,
         );
-      } finally {
-        ffmpegInstance.fs.unlink(safeVideoName);
-      }
+        increasePlaylistProgress(0.15 + clampedRatio * 0.85);
+      });
+
+      const safeVideoNameWithExtension = `${safeVideoName}.${extension}`;
+      // Far above the real conversion time, which is a few seconds per minute of audio
+      const timeoutMs = 60_000 + (metadata.songDuration ?? 0) * 1000;
+      await runFFmpeg(ffmpegInstance, timeoutMs, [
+        '-i',
+        safeVideoName,
+        ...presetFfmpegArgs,
+        ...getFFmpegMetadataArgs(metadata),
+        safeVideoNameWithExtension,
+      ]);
 
       sendFeedback(t('plugins.downloader.backend.feedback.saving'));
 
-      try {
-        return ffmpegInstance.fs.readFile(safeVideoNameWithExtension);
-      } finally {
-        ffmpegInstance.fs.unlink(safeVideoNameWithExtension);
-      }
+      // ffmpeg ends normally on a failed conversion: the missing output is the error
+      const output = ffmpegInstance.FS('readFile', safeVideoNameWithExtension);
+      ffmpegInstance.FS('unlink', safeVideoName);
+      ffmpegInstance.FS('unlink', safeVideoNameWithExtension);
+      return output;
     } catch (error: unknown) {
-      sendError(error as Error, safeVideoName);
+      // Start the next conversion from a fresh instance
+      disposeFFmpeg(!(error instanceof FFmpegTimeoutError));
+      throw error;
+    } finally {
+      ffmpegInstance.setProgress(() => {});
+      scheduleFFmpegUnload();
     }
-    return null;
   });
 }
 
-const getCoverBuffer = async (url: string) => {
-  const nativeImage = cropMaxWidth(await getImage(url));
-  return nativeImage && !nativeImage.isEmpty() ? nativeImage.toPNG() : null;
+// Source keeps the original audio stream, so the extension follows its codec
+const getSourceExtension = (format: { itag: number; mime_type: string }) => {
+  const codecs = /codecs="([^"]*)"/.exec(format.mime_type)?.[1] ?? '';
+  if (codecs.includes('mp4a')) return 'm4a';
+  if (codecs.includes('opus')) return 'opus';
+  return (
+    YoutubeFormatList.find((it) => it.itag === format.itag)?.container ?? 'mp3'
+  );
 };
 
-async function writeID3(
+const isJpeg = (buffer: Buffer) =>
+  buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+
+// The cover as JPEG: the original bytes when YouTube serves a square JPEG,
+// re-encoded only when a 16:9 video thumbnail has to be cropped
+const getCoverJpeg = async (url: string): Promise<Buffer | null> => {
+  if (!url) return null;
+
+  const response = await net.fetch(url);
+  if (!response.ok) return null;
+
+  const original = Buffer.from(await response.arrayBuffer());
+  const image = nativeImage.createFromBuffer(original);
+  if (image.isEmpty()) {
+    // Fix hidden webp files (https://github.com/th-ch/youtube-music/issues/315)
+    if (!url.endsWith('.jpg') && url.includes('.jpg')) {
+      return getCoverJpeg(url.slice(0, url.lastIndexOf('.jpg') + 4));
+    }
+    return null;
+  }
+
+  const cropped = cropMaxWidth(image);
+  return cropped === image && isJpeg(original) ? original : cropped.toJPEG(90);
+};
+
+function writeID3(
   buffer: Buffer,
   metadata: CustomSongInfo,
+  coverBuffer: Buffer | null,
   sendFeedback: (str: string, value?: number) => void,
 ) {
   try {
@@ -590,10 +819,9 @@ async function writeID3(
       tags.album = metadata.album;
     }
 
-    const coverBuffer = await getCoverBuffer(metadata.imageSrc ?? '');
     if (coverBuffer) {
       tags.image = {
-        mime: 'image/png',
+        mime: 'image/jpeg',
         type: {
           id: NodeID3.TagConstants.AttachedPicture.PictureType.FRONT_COVER,
         },
@@ -694,6 +922,14 @@ export async function downloadPlaylist(givenUrl?: string | URL) {
     items.push(...filteredItems);
   }
 
+  // Every item may have been filtered out
+  if (items.length === 0) {
+    sendError(
+      new Error(t('plugins.downloader.backend.feedback.playlist-is-empty')),
+    );
+    return;
+  }
+
   if (items.length === 1) {
     sendFeedback(
       t('plugins.downloader.backend.feedback.playlist-has-only-one-song'),
@@ -709,19 +945,15 @@ export async function downloadPlaylist(givenUrl?: string | URL) {
 
   const folder = getFolder(config.downloadFolder ?? '');
   const playlistFolder = join(folder, safePlaylistTitle);
-  if (existsSync(playlistFolder)) {
-    if (!config.skipExisting) {
-      sendError(
-        new Error(
-          t('plugins.downloader.backend.feedback.folder-already-exists', {
-            playlistFolder,
-          }),
-        ),
-      );
-      return;
-    }
-  } else {
-    mkdirSync(playlistFolder, { recursive: true });
+  // The folder is only created by the first saved track, so an existing one
+  // means an earlier attempt: resume it and skip the tracks already saved
+  const resume = existsSync(playlistFolder);
+
+  try {
+    await checkDecipher();
+  } catch (error: unknown) {
+    sendError(error as Error);
+    return;
   }
 
   dialog.showMessageBox(win, {
@@ -782,6 +1014,7 @@ export async function downloadPlaylist(givenUrl?: string | URL) {
         playlistFolder,
         trackId?.toString(),
         increaseProgress,
+        resume,
       ).catch((error) =>
         sendError(
           new Error(

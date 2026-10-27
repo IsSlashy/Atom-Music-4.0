@@ -10,8 +10,9 @@ export const DefaultPresetList: Record<string, Preset> = {
     ffmpegArgs: ['-b:a', '256k'],
   },
   'Source': {
+    // Audio stream copied as is, the extension follows its codec
     extension: undefined,
-    ffmpegArgs: ['-acodec', 'copy'],
+    ffmpegArgs: ['-vn', '-c:a', 'copy'],
   },
   'Custom': {
     extension: null,

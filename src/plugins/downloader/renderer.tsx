@@ -9,6 +9,7 @@ import { t } from '@/i18n';
 import {
   isAlbumOrPlaylist,
   isMusicOrVideoTrack,
+  isPlayerMenu,
 } from '@/plugins/utils/renderer/check';
 
 import { DownloadButton } from './templates/download';
@@ -21,6 +22,27 @@ let download: () => void;
 const [downloadButtonText, setDownloadButtonText] = createSignal<string>('');
 
 let buttonContainer: HTMLDivElement | null = null;
+
+type MenuEndpoint = HTMLElement & {
+  data?: {
+    addToPlaylistEndpoint?: { videoId?: string };
+    watchEndpoint?: { videoId?: string };
+  };
+};
+
+// The track a menu belongs to, from the endpoints YTM attached to its items.
+// Which item has tabindex="0" depends on focus, so it does not identify the track.
+const getMenuVideoId = (menu: HTMLElement) => {
+  const endpoints = [
+    ...menu.querySelectorAll<MenuEndpoint>('#navigation-endpoint'),
+  ];
+  return (
+    endpoints.find((it) => it.data?.addToPlaylistEndpoint?.videoId)?.data
+      ?.addToPlaylistEndpoint?.videoId ??
+    endpoints.find((it) => it.data?.watchEndpoint?.videoId)?.data?.watchEndpoint
+      ?.videoId
+  );
+};
 
 const menuObserver = new MutationObserver(() => {
   const menu = getSongMenu();
@@ -42,40 +64,35 @@ export const onRendererLoad = ({
 }: RendererContext<DownloaderPluginConfig>) => {
   download = () => {
     const songMenu = getSongMenu();
+    const hrefs = [
+      ...(songMenu?.querySelectorAll('#navigation-endpoint') ?? []),
+    ].map((it) => it.getAttribute('href') ?? '');
 
-    let videoUrl = songMenu
-      ?.querySelector(
-        'ytmusic-menu-navigation-item-renderer[tabindex="0"] #navigation-endpoint',
-      )
-      ?.getAttribute('href');
-
-    if (!videoUrl && songMenu) {
-      for (const it of songMenu.querySelectorAll(
-        'ytmusic-menu-navigation-item-renderer[tabindex="-1"] #navigation-endpoint',
-      )) {
-        if (it.getAttribute('href')?.includes('podcast/')) {
-          videoUrl = it.getAttribute('href');
-          break;
-        }
-      }
+    const playlistHref = hrefs.find((href) => href.includes('?playlist='));
+    if (playlistHref) {
+      ipc.invoke(
+        'download-playlist-request',
+        playlistHref.startsWith('watch?')
+          ? defaultConfig.url + '/' + playlistHref
+          : playlistHref,
+      );
+      return;
     }
 
-    if (videoUrl) {
-      if (videoUrl.startsWith('watch?')) {
-        videoUrl = defaultConfig.url + '/' + videoUrl;
-      }
-
-      if (videoUrl.startsWith('podcast/')) {
-        videoUrl =
-          defaultConfig.url + '/watch?' + videoUrl.replace('podcast/', 'v=');
-      }
-
-      if (videoUrl.includes('?playlist=')) {
-        ipc.invoke('download-playlist-request', videoUrl);
-        return;
-      }
-    } else {
+    let videoUrl: string | undefined;
+    const videoId = songMenu ? getMenuVideoId(songMenu) : undefined;
+    const podcastHref = hrefs.find((href) => href.startsWith('podcast/'));
+    if (videoId) {
+      videoUrl = defaultConfig.url + '/watch?v=' + videoId;
+    } else if (podcastHref) {
+      videoUrl =
+        defaultConfig.url + '/watch?' + podcastHref.replace('podcast/', 'v=');
+    } else if (!songMenu || isPlayerMenu(songMenu)) {
+      // Only the player bar menu stands for the track that is playing
       videoUrl = getSongInfo().url || window.location.href;
+    } else {
+      console.warn('[Downloader] No track found in this menu');
+      return;
     }
 
     ipc.invoke('download-song', videoUrl);
