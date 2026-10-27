@@ -156,10 +156,10 @@ export const SettingControl = (props: SettingControlProps) => {
         <Match when={valueType() === 'boolean'}>
           <label class={toggleStyle()}>
             <input
-              type="checkbox"
               aria-label={formatLabel(props.label)}
               checked={props.value as boolean}
               onChange={(e) => props.onChange(e.currentTarget.checked)}
+              type="checkbox"
             />
             <span class="slider" />
           </label>
@@ -167,29 +167,29 @@ export const SettingControl = (props: SettingControlProps) => {
         <Match when={valueType() === 'number'}>
           <div class={sliderContainerStyle()}>
             <input
-              class={sliderStyle()}
-              type="range"
               aria-label={formatLabel(props.label)}
-              min={0}
+              class={sliderStyle()}
               max={
                 typeof props.defaultValue === 'number'
                   ? Math.max(props.defaultValue * 2, 100)
                   : 100
               }
-              step={Number.isInteger(props.value as number) ? 1 : 0.1}
-              value={props.value as number}
+              min={0}
               onInput={(e) => props.onChange(Number(e.currentTarget.value))}
+              step={Number.isInteger(props.value as number) ? 1 : 0.1}
+              type="range"
+              value={props.value as number}
             />
             <span class={sliderValueStyle()}>{String(props.value)}</span>
           </div>
         </Match>
         <Match when={valueType() === 'string'}>
           <input
-            class={inputStyle()}
-            type="text"
             aria-label={formatLabel(props.label)}
-            value={props.value as string}
+            class={inputStyle()}
             onChange={(e) => props.onChange(e.currentTarget.value)}
+            type="text"
+            value={props.value as string}
           />
         </Match>
         <Match when={valueType() === 'object' || valueType() === 'undefined'}>

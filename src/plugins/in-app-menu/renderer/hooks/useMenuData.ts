@@ -12,8 +12,7 @@ const refreshMenuItem = async (originalMenu: Menu, commandId: number) => {
   let now: MenuItem | undefined = stack.pop();
   while (now) {
     const index =
-      now?.submenu?.items?.findIndex((it) => it.commandId === commandId) ??
-      -1;
+      now?.submenu?.items?.findIndex((it) => it.commandId === commandId) ?? -1;
 
     if (index >= 0) {
       if (menuItem) now?.submenu?.items?.splice(index, 1, menuItem);
