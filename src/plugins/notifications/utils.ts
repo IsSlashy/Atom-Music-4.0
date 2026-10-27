@@ -82,6 +82,16 @@ export const snakeToCamel = (string_: string) =>
     group.toUpperCase().replace('-', ' ').replace('_', ' '),
   );
 
+// Toast XML is built by string interpolation, so song metadata such as
+// "Simon & Garfunkel" must be escaped or Windows rejects it as invalid XML.
+export const xmlEscape = (text = '') =>
+  text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
+
 export const secondsToMinutes = (seconds: number) => {
   const minutes = Math.floor(seconds / 60);
   const secondsLeft = seconds % 60;

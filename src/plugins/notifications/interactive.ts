@@ -5,7 +5,12 @@ import pauseIcon from '@assets/media-icons-black/pause.png?asset&asarUnpack';
 import nextIcon from '@assets/media-icons-black/next.png?asset&asarUnpack';
 import previousIcon from '@assets/media-icons-black/previous.png?asset&asarUnpack';
 
-import { notificationImage, secondsToMinutes, ToastStyles } from './utils';
+import {
+  notificationImage,
+  secondsToMinutes,
+  ToastStyles,
+  xmlEscape,
+} from './utils';
 
 import { getSongControls } from '@/providers/song-controls';
 import {
@@ -120,7 +125,7 @@ export default (
                 ? ''
                 : kind.charAt(0).toUpperCase() + kind.slice(1)
             }"\
-            imageUri="file:///${selectIcon(kind)}"
+            imageUri="${xmlEscape(`file:///${selectIcon(kind)}`)}"
         `;
   };
 
@@ -156,9 +161,9 @@ export default (
   ) =>
     toast(
       `\
-            <image id="1" src="${imgSrc}" name="Image" ${placement}/>
-            <text id="1">${title}</text>
-            <text id="2">${artist}</text>\
+            <image id="1" src="${xmlEscape(imgSrc)}" name="Image" ${placement}/>
+            <text id="1">${xmlEscape(title)}</text>
+            <text id="2">${xmlEscape(artist)}</text>\
 `,
       isPaused ?? false,
     );
@@ -175,12 +180,12 @@ export default (
   const xmlBannerTopCustom = (songInfo: SongInfo, imgSrc: string) =>
     toast(
       `\
-            <image id="1" src="${imgSrc}" name="Image" />
+            <image id="1" src="${xmlEscape(imgSrc)}" name="Image" />
             <text>ㅤ</text>
             <group>
                 <subgroup>
-                    <text hint-style="body">${songInfo.title}</text>
-                    <text hint-style="captionSubtle">${songInfo.artist}</text>
+                    <text hint-style="body">${xmlEscape(songInfo.title)}</text>
+                    <text hint-style="captionSubtle">${xmlEscape(songInfo.artist)}</text>
                 </subgroup>
                 ${xmlMoreData(songInfo)}
             </group>\
@@ -192,7 +197,7 @@ export default (
 <subgroup hint-textStacking="bottom">
     ${
       album
-        ? `<text hint-style="captionSubtle" hint-wrap="true" hint-align="right">${album}</text>`
+        ? `<text hint-style="captionSubtle" hint-wrap="true" hint-align="right">${xmlEscape(album)}</text>`
         : ''
     }
     <text hint-style="captionSubtle" hint-wrap="true" hint-align="right">${secondsToMinutes(
@@ -212,11 +217,11 @@ export default (
                 <subgroup hint-weight="1" hint-textStacking="center">
                     <text hint-align="center" hint-style="${titleFontPicker(
                       title,
-                    )}">${title}</text>
-                    <text hint-align="center" hint-style="SubtitleSubtle">${artist}</text>
+                    )}">${xmlEscape(title)}</text>
+                    <text hint-align="center" hint-style="SubtitleSubtle">${xmlEscape(artist)}</text>
                 </subgroup>
             </group>
-            <image id="1" src="${imgSrc}" name="Image"  hint-removeMargin="true" />\
+            <image id="1" src="${xmlEscape(imgSrc)}" name="Image"  hint-removeMargin="true" />\
 `,
       isPaused ?? false,
     );
@@ -227,14 +232,14 @@ export default (
   ) =>
     toast(
       `\
-            <image id="1" src="${imgSrc}" name="Image" />
+            <image id="1" src="${xmlEscape(imgSrc)}" name="Image" />
             <text>ㅤ</text>
             <group>
                 <subgroup hint-weight="1" hint-textStacking="center">
                     <text hint-align="center" hint-style="${titleFontPicker(
                       title,
-                    )}">${title}</text>
-                    <text hint-align="center" hint-style="SubtitleSubtle">${artist}</text>
+                    )}">${xmlEscape(title)}</text>
+                    <text hint-align="center" hint-style="SubtitleSubtle">${xmlEscape(artist)}</text>
                 </subgroup>
             </group>\
 `,

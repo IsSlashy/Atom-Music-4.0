@@ -12,35 +12,11 @@ let injected = false;
 
 export const isInjected = () => injected;
 
-/**
- * @param {Electron.ContextBridge} contextBridge
- * @returns {*}
- */
-export const inject = (contextBridge) => {
+// The ad pruner for JSON.parse and Response.json runs in the main world (see
+// the adblocker preload script): calling it through contextBridge cloned every
+// parsed object across worlds and made JSON.parse about 8 times slower.
+export const inject = () => {
   injected = true;
-  {
-    const pruner = function (o) {
-      delete o.playerAds;
-      delete o.adPlacements;
-      delete o.adSlots;
-      //
-      if (o.playerResponse) {
-        delete o.playerResponse.playerAds;
-        delete o.playerResponse.adPlacements;
-        delete o.playerResponse.adSlots;
-      }
-      if (o.ytInitialPlayerResponse) {
-        delete o.ytInitialPlayerResponse.playerAds;
-        delete o.ytInitialPlayerResponse.adPlacements;
-        delete o.ytInitialPlayerResponse.adSlots;
-      }
-
-      //
-      return o;
-    }
-
-    contextBridge.exposeInMainWorld('_pruner', pruner);
-  }
 
   const chains = [
     {
