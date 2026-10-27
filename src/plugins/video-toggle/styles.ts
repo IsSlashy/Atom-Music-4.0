@@ -7,7 +7,8 @@ export const buttonSwitcherStyles = `
   position: relative;
 }
 
-/* Force center the toggle container.
+/* Centered by default; the align option sets justify-content inline, so it
+   must not be !important here.
    The container itself is non-interactive (pointer-events: none) so the empty
    area never swallows player clicks/drags — only the inner button is clickable.
    Width is constrained so the absolutely-positioned overlay doesn't span the
@@ -19,7 +20,7 @@ export const buttonSwitcherStyles = `
   right: 0 !important;
   width: auto !important;
   display: flex !important;
-  justify-content: center !important;
+  justify-content: center;
   z-index: var(--ytmd-video-toggle-z, 10);
   pointer-events: none;
 }
