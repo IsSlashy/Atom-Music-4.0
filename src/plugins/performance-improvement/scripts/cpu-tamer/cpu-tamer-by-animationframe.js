@@ -53,19 +53,9 @@ export const injectCpuTamerByAnimationFrame = ((__CONTEXT__) => {
     };
   })();
 
-  const isGPUAccelerationAvailable = (() => {
-    // https://gist.github.com/cvan/042b2448fcecefafbb6a91469484cdf8
-    try {
-      const canvas = document.createElement('canvas');
-      return !!(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'));
-    } catch (e) {
-      return false;
-    }
-  })();
-
-  if (!isGPUAccelerationAvailable) {
-    throw new Error('Your browser does not support GPU Acceleration. YouTube CPU Tamer by AnimationFrame is skipped.');
-  }
+  // GPU acceleration is checked by the caller (scripts/cpu-tamer/index.ts), which
+  // falls back to the DOM mutation variant. Probing WebGL here created a second
+  // throwaway GPU context on every page load.
 
   const timeupdateDT = (() => {
 
@@ -154,7 +144,15 @@ export const injectCpuTamerByAnimationFrame = ((__CONTEXT__) => {
       }
       asc.id = 'a-f';
       let qr = null;
+      // The animation only runs while a timer waits on it ([data-run]). Left
+      // running, its 1ms iterations force a style recalc on every frame even at
+      // idle, which cost more CPU than the timers it tames.
+      let running = false;
       asc.onanimationiteration = function () {
+        if (running) {
+          running = false;
+          asc.removeAttribute('data-run');
+        }
         if (qr !== null) qr = (qr(), null);
       }
       if (!document.getElementById('afscript')) {
@@ -184,13 +182,22 @@ export const injectCpuTamerByAnimationFrame = ((__CONTEXT__) => {
             height: 0px !important;
             contain: strict !important;
             pointer-events: none !important;
-            animation: 1ms steps(2, jump-none) 0ms infinite alternate forwards running aF1 !important;
+            animation: 1ms steps(2, jump-none) 0ms infinite alternate forwards paused aF1 !important;
+          }
+          #a-f[id][data-run] {
+            animation-play-state: running !important;
           }
         `;
         (document.head || document.documentElement).appendChild(style);
       }
       document.documentElement.insertBefore(asc, document.documentElement.firstChild);
-      return (resolve) => (qr = afInterupter = resolve);
+      return (resolve) => {
+        qr = afInterupter = resolve;
+        if (!running) {
+          running = true;
+          asc.setAttribute('data-run', '');
+        }
+      };
     };
 
     /** @type {(resolve: () => void)}  */
@@ -257,7 +264,11 @@ export const injectCpuTamerByAnimationFrame = ((__CONTEXT__) => {
 
       const dFunc = (propFunc) => {
         return (cid) => {
-          if (cid) inExec.delete(cid) || propFunc(cid);
+          if (!cid) return;
+          // A timer still waiting in wFunc must also be cleared natively,
+          // otherwise an interval cleared during its wait keeps firing.
+          inExec.delete(cid);
+          propFunc(cid);
         };
       };
 
