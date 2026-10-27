@@ -686,12 +686,14 @@ export const mainMenuTemplate = async (
     },
     {
       label: t('main.menu.about'),
-      submenu: [{
-        label: t('main.menu.about'),
-        click: () => {
-          win.webContents.send('ytmd:show-about');
+      submenu: [
+        {
+          label: t('main.menu.about'),
+          click: () => {
+            win.webContents.send('ytmd:show-about');
+          },
         },
-      }],
+      ],
     },
   ];
 };

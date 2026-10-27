@@ -1,4 +1,11 @@
-import { createMemo, createResource, createSignal, ErrorBoundary, For, Show } from 'solid-js';
+import {
+  createMemo,
+  createResource,
+  createSignal,
+  ErrorBoundary,
+  For,
+  Show,
+} from 'solid-js';
 import { css } from 'solid-styled-components';
 
 import { SettingsSection } from './SettingsSection';
@@ -172,9 +179,9 @@ export const SettingsPage = (props: SettingsPageProps) => {
     () => props.open(),
     async (open) => {
       if (!open) return [];
-      return window.ipcRenderer.invoke(
-        'ytmd:get-all-plugin-meta',
-      ) as Promise<PluginMeta[]>;
+      return window.ipcRenderer.invoke('ytmd:get-all-plugin-meta') as Promise<
+        PluginMeta[]
+      >;
     },
   );
 
@@ -205,12 +212,16 @@ export const SettingsPage = (props: SettingsPageProps) => {
         <div class={headerStyle()}>
           <h2 class={titleStyle()}>Settings</h2>
           <div
-            style={{ display: 'flex', 'align-items': 'center', gap: '12px' }}
+            style={{
+              'display': 'flex',
+              'align-items': 'center',
+              'gap': '12px',
+            }}
           >
             <span class={shortcutHintStyle()}>Ctrl+,</span>
             <button
-              class={closeButtonStyle()}
               aria-label={'Close settings'}
+              class={closeButtonStyle()}
               onClick={props.onClose}
             >
               {'✕'}
@@ -218,17 +229,21 @@ export const SettingsPage = (props: SettingsPageProps) => {
           </div>
         </div>
         <input
-          class={searchStyle()}
-          type="search"
           aria-label={'Search plugins'}
-          placeholder="Search plugins..."
-          value={search()}
+          class={searchStyle()}
           onInput={(e) => setSearch(e.currentTarget.value)}
+          placeholder="Search plugins..."
+          type="search"
+          value={search()}
         />
         <div class={contentStyle()}>
-          <ErrorBoundary fallback={(err) => (
-            <ErrorDisplay message={err?.message ?? 'Failed to load settings'} />
-          )}>
+          <ErrorBoundary
+            fallback={(err) => (
+              <ErrorDisplay
+                message={err?.message ?? 'Failed to load settings'}
+              />
+            )}
+          >
             <For each={filteredPlugins()}>
               {(plugin) => <SettingsSection plugin={plugin} />}
             </For>

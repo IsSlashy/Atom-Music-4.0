@@ -14,9 +14,7 @@ export const onRendererLoad = ({ ipc }: RendererContext<PluginConfig>) => {
   document.body.appendChild(container);
 
   render(
-    () => (
-      <SettingsPage open={isOpen} onClose={() => setIsOpen(false)} />
-    ),
+    () => <SettingsPage onClose={() => setIsOpen(false)} open={isOpen} />,
     container,
   );
 
