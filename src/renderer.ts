@@ -592,7 +592,9 @@ const playLocalFile = (file: LocalFile) => {
     mainCover.id = 'ytmd-local-main-cover';
     mainCover.style.cssText =
       'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;z-index:20;background:#000;pointer-events:none;';
-    ytPlayer.style.position = 'relative';
+    // No inline position on the player: YTM positions it (relative on the
+    // player page, fixed as the mini player), and an inline one left the mini
+    // player stuck over the page content after local playback.
     ytPlayer.appendChild(mainCover);
   }
 
