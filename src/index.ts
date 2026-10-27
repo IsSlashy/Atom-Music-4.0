@@ -1,6 +1,7 @@
 import path from 'node:path';
 import url from 'node:url';
 import fs from 'node:fs';
+import { Readable } from 'node:stream';
 
 import {
   BrowserWindow,
@@ -20,7 +21,7 @@ import enhanceWebRequest, {
 import is from 'electron-is';
 import unhandled from 'electron-unhandled';
 import { autoUpdater } from 'electron-updater';
-import { deepmerge } from 'deepmerge-ts';
+import { deepmergeCustom } from 'deepmerge-ts';
 import { deepEqual } from 'fast-equals';
 
 import { allPlugins, mainPlugins } from 'virtual:plugins';
@@ -56,6 +57,11 @@ import { loadI18n, setLanguage, t } from '@/i18n';
 import ErrorHtmlAsset from '@assets/error.html?asset';
 
 import type { PluginConfig } from '@/types/plugins';
+
+// Arrays in a stored config replace the defaults instead of being appended to them
+const deepmerge = deepmergeCustom({
+  mergeArrays: false,
+});
 
 // Catch errors and log them
 unhandled({
@@ -98,13 +104,18 @@ protocol.registerSchemesAsPrivileged([
     },
   },
   { scheme: 'mailto', privileges: { standard: true } },
-  { scheme: 'ytmd-local', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } },
+  // No fetch or CORS privileges: Electron answers a custom scheme as
+  // same-origin to every frame, so an ACAO header would not stop an ad iframe
+  // from fetching the library. <audio> and <img> loads, with seeking, still work.
+  {
+    scheme: 'ytmd-local',
+    privileges: {
+      standard: true,
+      secure: true,
+      stream: true,
+    },
+  },
 ]);
-
-// https://github.com/electron/electron/issues/46538#issuecomment-2808806722
-if (is.linux()) {
-  app.commandLine.appendSwitch('gtk-version', '3');
-}
 
 // Ozone platform hint: Required for Wayland support
 app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
@@ -117,7 +128,7 @@ app.commandLine.appendSwitch(
   'OverlayScrollbar,SharedArrayBuffer,UseOzonePlatform,WaylandWindowDecorations',
 );
 // Disable Fluent Scrollbar (for OverlayScrollbar)
-app.commandLine.appendSwitch('disable-features', 'FluentScrollbar');
+const disabledFeatures = ['FluentScrollbar'];
 if (config.get('options.disableHardwareAcceleration')) {
   if (is.dev()) {
     console.log('Disabling hardware acceleration');
@@ -132,9 +143,12 @@ if (is.linux()) {
 
   // Stops chromium from launching its own MPRIS service
   if (await config.plugins.isEnabled('shortcuts')) {
-    app.commandLine.appendSwitch('disable-features', 'MediaSessionService');
+    disabledFeatures.push('MediaSessionService');
   }
 }
+
+// A second disable-features switch would replace the first one, so append it once
+app.commandLine.appendSwitch('disable-features', disabledFeatures.join(','));
 
 if (config.get('options.proxy')) {
   const proxyToUse = config.get('options.proxy');
@@ -190,80 +204,457 @@ ipcMain.handle('ytmd:get-main-plugin-names', async () =>
   Object.keys(await mainPlugins()),
 );
 
-// List downloaded music files for the in-app downloads view
-ipcMain.handle('ytmd:list-downloads', async () => {
-  const dlConfig = config.get('plugins.downloader') as Record<string, unknown> | undefined;
-  const folder = (dlConfig?.downloadFolder as string) || app.getPath('downloads');
-  try {
-    const entries = fs.readdirSync(folder, { withFileTypes: true });
-    const musicExts = ['.mp3', '.opus', '.ogg', '.m4a', '.flac', '.wav', '.webm'];
-    const files = entries
-      .filter(e => e.isFile() && musicExts.some(ext => e.name.toLowerCase().endsWith(ext)))
-      .map(e => {
-        const filePath = path.join(folder, e.name);
-        const stat = fs.statSync(filePath);
-        let meta: { imageSrc?: string; title?: string; artist?: string } = {};
-        try {
-          const metaPath = filePath + '.meta.json';
-          if (fs.existsSync(metaPath)) {
-            const parsed: unknown = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-            if (parsed && typeof parsed === 'object') {
-              meta = parsed as { imageSrc?: string; title?: string; artist?: string };
-            }
-          }
-        } catch { /* ignore */ }
-        return { name: e.name, path: filePath, size: stat.size, modified: stat.mtimeMs, imageSrc: meta.imageSrc };
-      })
-      .sort((a, b) => b.modified - a.modified); // newest first
-    return { folder, files };
-  } catch {
-    return { folder, files: [] };
-  }
-});
+const YTM_ORIGIN = 'https://music.youtube.com';
 
-// Extract embedded cover art from audio file ID3 tags
-ipcMain.handle('ytmd:get-cover', async (_, filePath: string) => {
+// Privileged handlers answer only the YouTube Music page in the top frame. The
+// preload also runs on consent, sign-in and error pages and in popups, and none
+// of those may touch the disk or open an external app.
+const isTrustedSender = (
+  event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent,
+) => {
   try {
-    // Check meta.json first
-    const metaPath = filePath + '.meta.json';
-    if (fs.existsSync(metaPath)) {
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as {
-        imageSrc?: string;
-      };
-      if (meta.imageSrc) return { imageSrc: meta.imageSrc };
+    const frame = event.senderFrame;
+    return (
+      !!frame &&
+      frame.parent === null &&
+      URL.parse(frame.url)?.origin === YTM_ORIGIN
+    );
+  } catch {
+    // The frame was destroyed or navigated away
+    return false;
+  }
+};
+
+// Local library: downloads view, local playback and the ytmd-local protocol.
+// The page is a remote origin, so every path it sends is resolved to its real
+// location and must be a file with a known extension inside a library root.
+const audioMimeTypes: Record<string, string> = {
+  '.mp3': 'audio/mpeg',
+  '.opus': 'audio/opus',
+  '.ogg': 'audio/ogg',
+  '.m4a': 'audio/mp4',
+  '.flac': 'audio/flac',
+  '.wav': 'audio/wav',
+  '.webm': 'audio/webm',
+};
+const localMimeTypes: Record<string, string> = {
+  ...audioMimeTypes,
+  '.jpg': 'image/jpeg',
+  '.png': 'image/png',
+};
+const coverMimePattern = /^image\/(jpeg|png|webp|gif)$/;
+const coverDataUriPattern =
+  /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+// Hosts YouTube Music serves artwork from
+const coverHostSuffixes = [
+  '.ytimg.com',
+  '.ggpht.com',
+  '.googleusercontent.com',
+];
+// Playlist and album downloads add one folder level; never crawl a whole
+// Downloads tree
+const MAX_LIBRARY_DEPTH = 3;
+// Bigger ID3 tags are not read for their cover
+const MAX_ID3_TAG_SIZE = 16 * 1024 * 1024;
+
+type LibraryFile = {
+  name: string;
+  path: string;
+  size: number;
+  modified: number;
+  imageSrc?: string;
+};
+
+const comparablePath = (filePath: string) =>
+  is.windows() ? filePath.toLowerCase() : filePath;
+
+const isInsideRoot = (root: string, target: string) => {
+  const relative = path.relative(comparablePath(root), comparablePath(target));
+  return (
+    relative !== '' &&
+    !path.isAbsolute(relative) &&
+    relative.split(path.sep)[0] !== '..'
+  );
+};
+
+const isFile = (filePath: string) =>
+  fs.promises.stat(filePath).then(
+    (stat) => stat.isFile(),
+    () => false,
+  );
+
+// Read on every request, so a folder change applies at once: the download
+// folder (or the system Downloads folder) and the "download on finish" folder.
+const getLibraryRoots = async () => {
+  const dlConfig = config.get('plugins.downloader') as
+    | { downloadFolder?: string; downloadOnFinish?: { folder?: string } }
+    | undefined;
+  const roots: string[] = [];
+  for (const folder of [
+    dlConfig?.downloadFolder || app.getPath('downloads'),
+    dlConfig?.downloadOnFinish?.folder,
+  ]) {
+    if (typeof folder !== 'string' || !path.isAbsolute(folder)) continue;
+    try {
+      roots.push(await fs.promises.realpath(folder));
+    } catch {
+      // Missing folder
     }
-    // Fallback: read ID3 embedded artwork
+  }
+  return roots;
+};
+
+// Returns the real path and stats of a library file, or null if the path is
+// not a file with one of `extensions` inside a library root.
+const resolveLibraryFile = async (
+  rawPath: unknown,
+  extensions: Record<string, string>,
+) => {
+  if (typeof rawPath !== 'string' || !path.isAbsolute(rawPath)) return null;
+  try {
+    const realPath = await fs.promises.realpath(rawPath);
+    if (!Object.hasOwn(extensions, path.extname(realPath).toLowerCase())) {
+      return null;
+    }
+    const roots = await getLibraryRoots();
+    if (!roots.some((root) => isInsideRoot(root, realPath))) return null;
+    const stat = await fs.promises.stat(realPath);
+    return stat.isFile() ? { path: realPath, stat } : null;
+  } catch {
+    return null;
+  }
+};
+
+const toLocalUrl = (host: 'file' | 'cover', filePath: string) =>
+  `ytmd-local://${host}?path=${encodeURIComponent(filePath)}`;
+
+const audioBaseName = (name: string) =>
+  name.slice(0, name.length - path.extname(name).length);
+
+// Cover files the downloader writes next to a track
+const coverFileNames = (audioName: string) => {
+  const base = audioBaseName(audioName);
+  return [`${base}.jpg`, `${base}.png`, `${audioName}.jpg`, `${audioName}.png`];
+};
+
+const readSynchsafe = (buffer: Buffer, offset: number) =>
+  ((buffer[offset] & 0x7f) << 21) |
+  ((buffer[offset + 1] & 0x7f) << 14) |
+  ((buffer[offset + 2] & 0x7f) << 7) |
+  (buffer[offset + 3] & 0x7f);
+
+// Returns the mime type of the ID3v2.3/2.4 picture frame. Only the tag header
+// and the frame headers are read, never the picture itself.
+const findEmbeddedCoverMime = async (filePath: string) => {
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    const header = Buffer.alloc(10);
+    const { bytesRead } = await handle.read(header, 0, 10, 0);
+    const version = header[3];
+    if (
+      bytesRead < 10 ||
+      header.toString('latin1', 0, 3) !== 'ID3' ||
+      (version !== 3 && version !== 4)
+    ) {
+      return null;
+    }
+
+    const tagEnd = 10 + readSynchsafe(header, 6);
+    // readEmbeddedCover will not serve a bigger tag
+    if (tagEnd > MAX_ID3_TAG_SIZE) return null;
+    let offset = 10;
+    if (header[5] & 0x40) {
+      // Skip the extended header
+      const extended = Buffer.alloc(4);
+      await handle.read(extended, 0, 4, 10);
+      offset +=
+        version === 4
+          ? readSynchsafe(extended, 0)
+          : 4 + extended.readUInt32BE(0);
+    }
+
+    const frameHeader = Buffer.alloc(10);
+    const frameStart = Buffer.alloc(64);
+    for (let frames = 0; frames < 64 && offset + 10 <= tagEnd; frames++) {
+      await handle.read(frameHeader, 0, 10, offset);
+      const id = frameHeader.toString('latin1', 0, 4);
+      // Padding, or a broken tag
+      if (!/^[A-Z0-9]{4}$/.test(id)) return null;
+
+      const frameSize =
+        version === 4
+          ? readSynchsafe(frameHeader, 4)
+          : frameHeader.readUInt32BE(4);
+      if (id === 'APIC') {
+        const read = await handle.read(
+          frameStart,
+          0,
+          Math.min(frameStart.length, frameSize),
+          offset + 10,
+        );
+        // ID3v2.4 frames may start with a 4-byte data length indicator. The
+        // body is the text encoding byte, then the null-terminated mime type.
+        const mimeStart = (version === 4 && frameHeader[9] & 0x01 ? 4 : 0) + 1;
+        const mimeEnd = frameStart.indexOf(0, mimeStart);
+        return mimeEnd > mimeStart && mimeEnd < read.bytesRead
+          ? frameStart.toString('latin1', mimeStart, mimeEnd).toLowerCase()
+          : null;
+      }
+      offset += 10 + frameSize;
+    }
+    return null;
+  } finally {
+    await handle.close();
+  }
+};
+
+// Listing a library checks every track, so the answer is kept per file version
+const embeddedCoverCache = new Map<
+  string,
+  { mtimeMs: number; size: number; hasCover: boolean }
+>();
+
+const hasEmbeddedCover = async (filePath: string, stat: fs.Stats) => {
+  const key = comparablePath(filePath);
+  const cached = embeddedCoverCache.get(key);
+  if (cached?.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.hasCover;
+  }
+
+  const mime = await findEmbeddedCoverMime(filePath).catch(() => null);
+  const hasCover = !!mime && coverMimePattern.test(mime);
+  embeddedCoverCache.set(key, {
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    hasCover,
+  });
+  return hasCover;
+};
+
+// Reads only the ID3 tag, not the whole audio file, and returns its picture
+const readEmbeddedCover = async (filePath: string) => {
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    const header = Buffer.alloc(10);
+    const { bytesRead } = await handle.read(header, 0, 10, 0);
+    if (bytesRead < 10 || header.toString('latin1', 0, 3) !== 'ID3') {
+      return null;
+    }
+    const tagSize = 10 + readSynchsafe(header, 6);
+    if (tagSize > MAX_ID3_TAG_SIZE) return null;
+
+    const tag = Buffer.alloc(tagSize);
+    await handle.read(tag, 0, tagSize, 0);
     const NodeID3 = await import('node-id3');
-    const tags = NodeID3.read(filePath);
-    const img = tags.image;
-    if (img && typeof img === 'object' && 'imageBuffer' in img && img.imageBuffer) {
-      const mime = img.mime || 'image/png';
-      const b64 = Buffer.from(img.imageBuffer).toString('base64');
-      return { imageSrc: `data:${mime};base64,${b64}` };
+    const image = NodeID3.read(tag, { include: ['APIC'] }).image;
+    const mime =
+      image && typeof image === 'object' ? image.mime?.toLowerCase() : null;
+    if (
+      image &&
+      typeof image === 'object' &&
+      image.imageBuffer &&
+      mime &&
+      coverMimePattern.test(mime)
+    ) {
+      return { mime, data: new Uint8Array(image.imageBuffer) };
     }
-    return { imageSrc: null };
-  } catch {
-    return { imageSrc: null };
+    return null;
+  } finally {
+    await handle.close();
   }
-});
+};
 
-// Open a specific file with default app
-ipcMain.on('ytmd:open-file', (_, filePath: string) => {
-  shell.openPath(filePath);
-});
+// Remote artwork is accepted only over https from YouTube's image hosts, or as
+// an inline image. Returning the parsed href keeps quotes out of the string.
+const validateCoverUrl = (imageSrc: unknown) => {
+  if (typeof imageSrc !== 'string') return null;
+  if (coverDataUriPattern.test(imageSrc)) return imageSrc;
 
-ipcMain.on('ytmd:open-url', (_, url: string) => {
-  shell.openExternal(url);
-});
+  const coverUrl = URL.parse(imageSrc);
+  if (coverUrl?.protocol !== 'https:') return null;
+  return coverHostSuffixes.some((suffix) => coverUrl.hostname.endsWith(suffix))
+    ? coverUrl.href
+    : null;
+};
 
-// Delete a downloaded file
-ipcMain.handle('ytmd:delete-download', (_, filePath: string) => {
+const readRemoteCover = async (audioPath: string) => {
   try {
-    fs.unlinkSync(filePath);
-    return { success: true };
+    const meta: unknown = JSON.parse(
+      await fs.promises.readFile(`${audioPath}.meta.json`, 'utf-8'),
+    );
+    return meta && typeof meta === 'object'
+      ? validateCoverUrl((meta as { imageSrc?: unknown }).imageSrc)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+// Cover priority: a cover file next to the track, then the cover embedded in
+// its tags, then the remote artwork recorded at download time. `siblings`
+// holds the file names of the track's folder when the caller listed it.
+const resolveCoverSrc = async (
+  audioPath: string,
+  stat: fs.Stats,
+  siblings?: Set<string>,
+) => {
+  const folder = path.dirname(audioPath);
+  const name = path.basename(audioPath);
+  for (const coverName of coverFileNames(name)) {
+    const coverPath = path.join(folder, coverName);
+    if (siblings ? siblings.has(coverName) : await isFile(coverPath)) {
+      return toLocalUrl('file', coverPath);
+    }
+  }
+
+  if (await hasEmbeddedCover(audioPath, stat)) {
+    return toLocalUrl('cover', audioPath);
+  }
+
+  if (siblings && !siblings.has(`${name}.meta.json`)) return null;
+  return readRemoteCover(audioPath);
+};
+
+const listLibraryFolder = async (
+  folder: string,
+  depth: number,
+  files: Map<string, LibraryFile>,
+) => {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(folder, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  // Symbolic links and junctions are skipped, so every listed path is real
+  const siblings = new Set(
+    entries.filter((entry) => entry.isFile()).map((entry) => entry.name),
+  );
+  await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = path.join(folder, entry.name);
+      if (entry.isDirectory()) {
+        if (depth < MAX_LIBRARY_DEPTH && !entry.name.startsWith('.')) {
+          await listLibraryFolder(entryPath, depth + 1, files);
+        }
+        return;
+      }
+
+      const extension = path.extname(entry.name).toLowerCase();
+      if (!entry.isFile() || !Object.hasOwn(audioMimeTypes, extension)) return;
+      try {
+        const stat = await fs.promises.stat(entryPath);
+        const imageSrc = await resolveCoverSrc(entryPath, stat, siblings);
+        // Keyed by path, so overlapping roots do not list a track twice
+        files.set(comparablePath(entryPath), {
+          name: entry.name,
+          path: entryPath,
+          size: stat.size,
+          modified: stat.mtimeMs,
+          imageSrc: imageSrc ?? undefined,
+        });
+      } catch {
+        // The file went away while listing
+      }
+    }),
+  );
+};
+
+// Parses a single "bytes=" range against the file size. Returns null to serve
+// the whole file (no range, or a form we do not support, which a server may
+// ignore) and 'unsatisfiable' for a 416.
+const parseByteRange = (header: string | null, size: number) => {
+  const match = header?.trim().match(/^bytes=(\d*)-(\d*)$/);
+  if (!match || (match[1] === '' && match[2] === '')) return null;
+
+  let start: number;
+  let end = size - 1;
+  if (match[1] === '') {
+    // Suffix range: the last N bytes
+    const length = Number(match[2]);
+    if (length === 0) return 'unsatisfiable';
+    start = Math.max(0, size - length);
+  } else {
+    start = Number(match[1]);
+    if (match[2] !== '') end = Math.min(Number(match[2]), size - 1);
+  }
+
+  if (start >= size || start > end) return 'unsatisfiable';
+  return { start, end };
+};
+
+// List downloaded music files for the in-app downloads view, across every
+// library root and its subfolders
+ipcMain.handle('ytmd:list-downloads', async (event) => {
+  if (!isTrustedSender(event)) return { folder: '', files: [] };
+
+  const dlConfig = config.get('plugins.downloader') as
+    | Record<string, unknown>
+    | undefined;
+  const folder =
+    (dlConfig?.downloadFolder as string) || app.getPath('downloads');
+  const files = new Map<string, LibraryFile>();
+  for (const root of await getLibraryRoots()) {
+    await listLibraryFolder(root, 0, files);
+  }
+  return {
+    folder,
+    files: [...files.values()].sort((a, b) => b.modified - a.modified), // newest first
+  };
+});
+
+// Cover of a library track, as a ytmd-local URL when it is stored locally
+ipcMain.handle('ytmd:get-cover', async (event, filePath: unknown) => {
+  if (!isTrustedSender(event)) return { imageSrc: null };
+
+  const file = await resolveLibraryFile(filePath, audioMimeTypes);
+  if (!file) return { imageSrc: null };
+  return { imageSrc: await resolveCoverSrc(file.path, file.stat) };
+});
+
+// Only web links leave the app: file:, ms-settings: and other schemes would
+// open local programs
+ipcMain.on('ytmd:open-url', (event, rawUrl: unknown) => {
+  if (!isTrustedSender(event) || typeof rawUrl !== 'string') return;
+
+  const target = URL.parse(rawUrl);
+  if (target?.protocol !== 'https:') return;
+  shell.openExternal(target.href).catch(() => {});
+});
+
+// Move a downloaded track to the trash, with its metadata and cover files
+ipcMain.handle('ytmd:delete-download', async (event, filePath: unknown) => {
+  if (!isTrustedSender(event)) return { success: false };
+
+  const file = await resolveLibraryFile(filePath, audioMimeTypes);
+  if (!file) return { success: false };
+  try {
+    await shell.trashItem(file.path);
   } catch {
     return { success: false };
   }
+  embeddedCoverCache.delete(comparablePath(file.path));
+
+  const folder = path.dirname(file.path);
+  const name = path.basename(file.path);
+  const base = audioBaseName(name);
+  // "<base>.jpg" also belongs to another track with the same base name
+  const remaining = await fs.promises.readdir(folder).catch(() => []);
+  const sharesBaseName = remaining.some(
+    (other) =>
+      Object.hasOwn(audioMimeTypes, path.extname(other).toLowerCase()) &&
+      audioBaseName(other) === base,
+  );
+  const companions = [`${name}.meta.json`, `${name}.jpg`, `${name}.png`];
+  if (!sharesBaseName) companions.push(`${base}.jpg`, `${base}.png`);
+  for (const companion of companions) {
+    const companionPath = path.join(folder, companion);
+    if (await isFile(companionPath)) {
+      await shell.trashItem(companionPath).catch(() => {});
+    }
+  }
+  return { success: true };
 });
 
 let hooksInstalled = false;
@@ -278,18 +669,17 @@ const initHook = async (_win: BrowserWindow) => {
 
   const allPluginStubs = await allPlugins();
 
-  ipcMain.handle(
-    'ytmd:get-config',
-    (_, id: string) => {
-      const stored = config.get(`plugins.${id}`);
-      const def = allPluginStubs[id]?.config ?? { enabled: false };
-      const merged = deepmerge(def, stored ?? {}) as PluginConfig;
-      return merged;
-    },
-  );
-  ipcMain.handle('ytmd:set-config', (_, name: string, obj: object) =>
-    config.setPartial(`plugins.${name}`, obj, allPluginStubs[name].config),
-  );
+  ipcMain.handle('ytmd:get-config', (_, id: string) => {
+    const stored = config.get(`plugins.${id}`);
+    const def = allPluginStubs[id]?.config ?? { enabled: false };
+    const merged = deepmerge(def, stored ?? {}) as PluginConfig;
+    return merged;
+  });
+  ipcMain.handle('ytmd:set-config', (event, name: string, obj: object) => {
+    // Plugin settings decide what gets enabled and where downloads are written
+    if (!isTrustedSender(event)) return;
+    config.setPartial(`plugins.${name}`, obj, allPluginStubs[name].config);
+  });
 
   ipcMain.handle('ytmd:get-all-plugin-meta', () =>
     Object.entries(allPluginStubs).map(([id, stub]) => ({
@@ -397,19 +787,21 @@ const showNeedToRestartDialog = async (id: string) => {
     dialogPromise = dialog.showMessageBox(dialogOptions);
   }
 
-  dialogPromise.then((dialogOutput) => {
-    switch (dialogOutput.response) {
-      case 0: {
-        restart();
-        break;
-      }
+  dialogPromise
+    .then((dialogOutput) => {
+      switch (dialogOutput.response) {
+        case 0: {
+          restart();
+          break;
+        }
 
-      // Ignore
-      default: {
-        break;
+        // Ignore
+        default: {
+          break;
+        }
       }
-    }
-  }).catch((err) => console.error(LoggerPrefix, 'Restart dialog error:', err));
+    })
+    .catch((err) => console.error(LoggerPrefix, 'Restart dialog error:', err));
 };
 
 function initTheme(win: BrowserWindow) {
@@ -613,14 +1005,10 @@ async function createMainWindow() {
     fn: (key: string, value: unknown) => void = config.set,
   ) {
     pendingSaves[key] = { value, fn };
-    lateSave(
-      key,
-      value,
-      (k, v) => {
-        delete pendingSaves[k];
-        fn(k, v);
-      },
-    );
+    lateSave(key, value, (k, v) => {
+      delete pendingSaves[k];
+      fn(k, v);
+    });
   }
 
   // Flush any debounced saves immediately so we don't lose the latest
@@ -731,10 +1119,14 @@ async function createMainWindow() {
   });
 
   win.webContents.on('will-redirect', (event) => {
-    const url = new URL(event.url);
+    const url = URL.parse(event.url);
 
     // Workarounds for regions where YTM is restricted
-    if (url.hostname.endsWith('youtube.com') && url.pathname === '/premium') {
+    if (
+      url &&
+      url.hostname.endsWith('youtube.com') &&
+      url.pathname === '/premium'
+    ) {
       event.preventDefault();
 
       win.webContents.loadURL(
@@ -816,7 +1208,7 @@ app.once('browser-window-created', (_event, win) => {
       if (
         errorCode !== -3 &&
         // Workaround for #2435
-        !new URL(validatedURL).hostname.includes('doubleclick.net')
+        !URL.parse(validatedURL)?.hostname?.includes('doubleclick.net')
       ) {
         // -3 is a false positive
         win.webContents.send('log', log);
@@ -877,53 +1269,65 @@ app.whenReady().then(async () => {
     version: 'Revamp Edition',
   });
 
-  // Register protocol for serving local audio files (with range request support)
-  protocol.handle('ytmd-local', (request) => {
-    const url = new URL(request.url);
-    const filePath = url.searchParams.get('path') || '';
-    try {
-      const stat = fs.statSync(filePath);
-      const fileSize = stat.size;
-      const ext = path.extname(filePath).toLowerCase();
-      const mimeTypes: Record<string, string> = {
-        '.mp3': 'audio/mpeg', '.opus': 'audio/opus', '.ogg': 'audio/ogg',
-        '.m4a': 'audio/mp4', '.flac': 'audio/flac', '.wav': 'audio/wav',
-        '.webm': 'audio/webm',
-      };
-      const contentType = mimeTypes[ext] || 'audio/mpeg';
-      const rangeHeader = request.headers.get('range');
+  // Serve library files to the page: audio and cover files by path, and the
+  // picture embedded in a track's tags. Anything else is refused.
+  protocol.handle('ytmd-local', async (request) => {
+    const requestUrl = URL.parse(request.url);
+    const requestedPath = requestUrl?.searchParams.get('path');
+    const baseHeaders = { 'X-Content-Type-Options': 'nosniff' };
 
-      if (rangeHeader) {
-        const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-        const start = match ? parseInt(match[1], 10) : 0;
-        const end = match && match[2] ? parseInt(match[2], 10) : fileSize - 1;
-        const chunkSize = end - start + 1;
-        const buffer = Buffer.alloc(chunkSize);
-        const fd = fs.openSync(filePath, 'r');
-        fs.readSync(fd, buffer, 0, chunkSize, start);
-        fs.closeSync(fd);
-        return new Response(buffer, {
-          status: 206,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(chunkSize),
-            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-            'Accept-Ranges': 'bytes',
-          },
-        });
+    if (requestUrl?.hostname === 'cover') {
+      const file = await resolveLibraryFile(requestedPath, audioMimeTypes);
+      const cover =
+        file && (await readEmbeddedCover(file.path).catch(() => null));
+      if (!cover) {
+        return new Response('Not Found', { status: 404, headers: baseHeaders });
       }
-
-      const data = fs.readFileSync(filePath);
-      return new Response(data, {
+      return new Response(cover.data, {
         headers: {
-          'Content-Type': contentType,
-          'Content-Length': String(fileSize),
-          'Accept-Ranges': 'bytes',
+          ...baseHeaders,
+          'Content-Type': cover.mime,
+          'Content-Length': String(cover.data.length),
         },
       });
-    } catch {
-      return new Response('Not Found', { status: 404 });
     }
+
+    const file =
+      requestUrl?.hostname === 'file'
+        ? await resolveLibraryFile(requestedPath, localMimeTypes)
+        : null;
+    if (!file) {
+      return new Response('Forbidden', { status: 403, headers: baseHeaders });
+    }
+
+    const fileSize = file.stat.size;
+    const headers: Record<string, string> = {
+      ...baseHeaders,
+      'Content-Type': localMimeTypes[path.extname(file.path).toLowerCase()],
+      'Accept-Ranges': 'bytes',
+    };
+    const range = parseByteRange(request.headers.get('range'), fileSize);
+    if (range === 'unsatisfiable') {
+      return new Response(null, {
+        status: 416,
+        headers: { ...baseHeaders, 'Content-Range': `bytes */${fileSize}` },
+      });
+    }
+    if (range) {
+      headers['Content-Range'] =
+        `bytes ${range.start}-${range.end}/${fileSize}`;
+    }
+
+    // Stream from the real path, so only the requested bytes are ever read
+    const { start, end } = range ?? { start: 0, end: fileSize - 1 };
+    headers['Content-Length'] = String(fileSize === 0 ? 0 : end - start + 1);
+    const body =
+      fileSize === 0
+        ? null
+        : (Readable.toWeb(
+            fs.createReadStream(file.path, { start, end }),
+          ) as ReadableStream<Uint8Array>);
+    return new Response(body, { status: range ? 206 : 200, headers });
   });
 
   if (!config.get('options.language')) {
@@ -1033,7 +1437,10 @@ app.whenReady().then(async () => {
       const rendererPath = path.join(__dirname, '..', 'renderer');
       const { parse } = await import('node-html-parser');
       const indexHTML = parse(
-        await fs.promises.readFile(path.join(rendererPath, 'index.html'), 'utf-8'),
+        await fs.promises.readFile(
+          path.join(rendererPath, 'index.html'),
+          'utf-8',
+        ),
       );
       const scriptSrc = indexHTML.querySelector('script')!;
       const scriptPath = path.join(
@@ -1041,10 +1448,7 @@ app.whenReady().then(async () => {
         scriptSrc.getAttribute('src')!,
       );
       const scriptString = await fs.promises.readFile(scriptPath, 'utf-8');
-      return [
-        url.pathToFileURL(scriptPath).toString(),
-        scriptString + ';0',
-      ];
+      return [url.pathToFileURL(scriptPath).toString(), scriptString + ';0'];
     }
   });
 
@@ -1193,8 +1597,7 @@ app.whenReady().then(async () => {
       // Hide the window instead of quitting (quit is available in tray options)
       if (!forceQuit) {
         event.preventDefault();
-        // Pause playback when hiding to tray so music doesn't keep playing
-        mainWindow!.webContents.send('ytmd:pause');
+        // Playback goes on while the window sits in the tray
         mainWindow!.hide();
       }
     });
@@ -1255,7 +1658,7 @@ function removeContentSecurityPolicy(
     details.responseHeaders ??= {};
 
     // prettier-ignore
-    if (new URL(details.url).protocol === 'https:') {
+    if (URL.parse(details.url)?.protocol === 'https:') {
       // Remove the content security policy
       delete details.responseHeaders['content-security-policy-report-only'];
       delete details.responseHeaders['Content-Security-Policy-Report-Only'];
@@ -1285,7 +1688,7 @@ function removeContentSecurityPolicy(
           }
 
           const result = await listener.apply();
-          return { ...accumulator, ...result };
+          return { ...acc, ...result };
         },
         Promise.resolve({ cancel: false }),
       );
