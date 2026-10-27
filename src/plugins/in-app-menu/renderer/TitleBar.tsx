@@ -195,16 +195,23 @@ export const TitleBar = (props: TitleBarProps) => {
 
   let titleBar: HTMLElement | undefined;
   let resizeObserver: ResizeObserver | undefined;
-  // width the title bar needed when the menus were last shown
-  let requiredWidth = 0;
+  // right edge of the items when the menus were last shown. The right padding
+  // is read again each time: it follows the window controls overlay, whose
+  // size can lag behind a window resize and leave the padding far too wide
+  // for a moment
+  let requiredItemsRight = 0;
   let autoCollapseFrame = 0;
   let observeItemsPending = false;
 
   const updateAutoCollapse = () => {
     if (!titleBar) return;
 
+    const room =
+      titleBar.clientWidth -
+      (parseFloat(getComputedStyle(titleBar).paddingRight) || 0);
+
     if (autoCollapsed()) {
-      if (titleBar.clientWidth >= requiredWidth + AUTO_COLLAPSE_HYSTERESIS) {
+      if (room >= requiredItemsRight + AUTO_COLLAPSE_HYSTERESIS) {
         setOpenTarget(null);
         setAutoCollapsed(false);
       }
@@ -214,10 +221,9 @@ export const TitleBar = (props: TitleBarProps) => {
     // the menus are hidden by the user, there is nothing to measure
     if (collapsed()) return;
 
-    const paddingRight = parseFloat(getComputedStyle(titleBar).paddingRight);
-    const width = getItemsRight(titleBar) + (paddingRight || 0);
-    if (width > titleBar.clientWidth) {
-      requiredWidth = width;
+    const itemsRight = getItemsRight(titleBar);
+    if (itemsRight > room) {
+      requiredItemsRight = itemsRight;
       setOpenTarget(null);
       setAutoCollapsed(true);
     }
