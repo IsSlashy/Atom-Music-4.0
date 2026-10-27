@@ -1,4 +1,11 @@
-import { borderRadius, colors, typography, transitions, glass, zIndex } from './tokens';
+import {
+  borderRadius,
+  colors,
+  typography,
+  transitions,
+  glass,
+  zIndex,
+} from './tokens';
 
 /**
  * Global styles overriding YouTube Music defaults.
@@ -107,11 +114,9 @@ tp-yt-paper-dialog {
   -webkit-app-region: no-drag;
 }
 
-/* Liquid glass player bar */
+/* Player bar: near-opaque fill, no backdrop blur (M12) */
 ytmusic-player-bar {
-  background: rgba(0, 0, 0, 0.45) !important;
-  backdrop-filter: ${glass.blur} !important;
-  -webkit-backdrop-filter: ${glass.blur} !important;
+  background: ${colors.surfaceBg} !important;
   border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
@@ -124,8 +129,6 @@ ytmusic-player-bar #play-pause-button {
   background: rgba(255, 255, 255, 0.1) !important;
   border: 1px solid rgba(255, 255, 255, 0.12) !important;
   border-radius: ${borderRadius.round} !important;
-  backdrop-filter: blur(12px) saturate(140%) !important;
-  -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
   color: ${colors.white} !important;
   transition: background ${transitions.normal} ${transitions.smoothOut},
               border-color ${transitions.normal} ${transitions.smoothOut},
@@ -148,8 +151,6 @@ ytmusic-player-bar .next-button {
   background: rgba(255, 255, 255, 0.04) !important;
   border: 1px solid ${colors.sidebarItemHover} !important;
   border-radius: ${borderRadius.round} !important;
-  backdrop-filter: blur(12px) saturate(140%) !important;
-  -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
   color: ${colors.textSecondary} !important;
   transition: background ${transitions.normal} ${transitions.smoothOut},
               border-color ${transitions.normal} ${transitions.smoothOut},
@@ -167,35 +168,6 @@ ytmusic-player-bar .next-button:hover {
 ytmusic-player-bar .previous-button:active,
 ytmusic-player-bar .next-button:active {
   transform: scale(0.90) !important;
-}
-
-/* ---- Like / Dislike buttons — soft glass circles ---- */
-ytmusic-player-bar ytmusic-like-button-renderer tp-yt-paper-icon-button {
-  background: rgba(255, 255, 255, 0.04) !important;
-  border: 1px solid ${colors.sidebarItemHover} !important;
-  border-radius: ${borderRadius.round} !important;
-  color: ${colors.textTertiary} !important;
-  transition: background ${transitions.normal} ${transitions.smoothOut},
-              border-color ${transitions.normal} ${transitions.smoothOut},
-              color ${transitions.normal} ${transitions.smoothOut},
-              transform ${transitions.fast} ${transitions.smoothOut} !important;
-}
-
-ytmusic-player-bar ytmusic-like-button-renderer tp-yt-paper-icon-button:hover {
-  background: ${colors.sidebarItemActive} !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  color: rgba(255, 255, 255, 0.9) !important;
-}
-
-ytmusic-player-bar ytmusic-like-button-renderer tp-yt-paper-icon-button:active {
-  transform: scale(0.88) !important;
-}
-
-/* Like/Dislike active state — accent glow */
-ytmusic-player-bar ytmusic-like-button-renderer tp-yt-paper-icon-button[aria-pressed="true"] {
-  color: ${colors.accent} !important;
-  border-color: rgba(73, 243, 247, 0.25) !important;
-  background: rgba(73, 243, 247, 0.08) !important;
 }
 
 /* ---- Icon sizing inside player buttons ---- */
@@ -246,7 +218,6 @@ ytmusic-player-bar,
 ytmusic-player-bar .title,
 ytmusic-player-bar .byline,
 .tab-title,
-.guide-entry-title,
 ytmusic-search-box #input,
 tp-yt-paper-item {
   font-family: ${typography.fontFamily} !important;
@@ -269,87 +240,22 @@ yt-formatted-string.subtitle,
 }
 
 /* ========================================
-   Navigation Tabs (pill-shaped, glass)
-   ======================================== */
-
-/* Target both old element name and class-based selector */
-ytmusic-pivot-bar-item-renderer,
-.ytmusic-pivot-bar-renderer[tab-id] {
-  border-radius: ${borderRadius.pill} !important;
-  padding: 8px 16px !important;
-  transition: color ${transitions.normal} ${transitions.smoothOut},
-              background ${transitions.normal} ${transitions.smoothOut},
-              transform ${transitions.fast} ${transitions.smoothOut} !important;
-  text-transform: none !important;
-  margin: 0 4px !important;
-}
-
-ytmusic-pivot-bar-item-renderer:hover,
-.ytmusic-pivot-bar-renderer[tab-id]:hover {
-  background: ${colors.sidebarItemHover} !important;
-}
-
-ytmusic-pivot-bar-item-renderer[selected],
-ytmusic-pivot-bar-item-renderer.iron-selected,
-.ytmusic-pivot-bar-renderer[tab-id][selected],
-.ytmusic-pivot-bar-renderer[tab-id][aria-selected="true"] {
-  background: ${colors.sidebarItemActive} !important;
-  color: ${colors.white} !important;
-  font-weight: ${typography.fontWeightSemibold} !important;
-}
-
-ytmusic-pivot-bar-item-renderer .tab-title,
-.ytmusic-pivot-bar-renderer[tab-id] .tab-title {
-  color: inherit !important;
-}
-
-ytmusic-pivot-bar-item-renderer[selected] .tab-title,
-ytmusic-pivot-bar-item-renderer.iron-selected .tab-title,
-.ytmusic-pivot-bar-renderer[tab-id][selected] .tab-title,
-.ytmusic-pivot-bar-renderer[tab-id][aria-selected="true"] .tab-title {
-  color: ${colors.white} !important;
-}
-
-/* Hide default tab underline indicator */
-ytmusic-pivot-bar-item-renderer .tab-indicator,
-ytmusic-pivot-bar-renderer #indicator {
-  display: none !important;
-}
-
-/* Nav bar glass effect */
-ytmusic-pivot-bar-renderer {
-  backdrop-filter: ${glass.blurLight} !important;
-  -webkit-backdrop-filter: ${glass.blurLight} !important;
-}
-
-/* ========================================
    Sidebar Modernization
    ======================================== */
 
+/* M12: near-opaque fill instead of a backdrop blur */
 ytmusic-guide-renderer {
-  background: ${colors.glassBg} !important;
-  backdrop-filter: ${glass.blurLight} !important;
-  -webkit-backdrop-filter: ${glass.blurLight} !important;
+  background: ${colors.surfaceBg} !important;
   border-right: none !important;
   border: none !important;
   box-shadow: none !important;
 }
 
-ytmusic-guide-section-renderer > .header {
-  text-transform: uppercase !important;
-  font-size: ${typography.fontSizeXs} !important;
-  font-weight: ${typography.fontWeightSemibold} !important;
-  color: ${colors.textTertiary} !important;
-  letter-spacing: ${typography.letterSpacingWide} !important;
-  padding: 16px 16px 8px !important;
-}
-
 /*
- * THM-04: the base sidebar item layout (size, padding, margin, radius,
- * transition) is defined once in the "icon-only" rule further down, since the
- * sidebar is permanently collapsed. This block previously duplicated those
- * declarations with wider-layout values that were always overridden; only the
- * interactive states are kept here.
+ * THM-04: the base rail item layout (size, padding, margin, radius,
+ * transition) is defined once in the "icon-only" rule further down, scoped to
+ * #mini-guide. The drawer keeps YTM's own item layout. Only the interactive
+ * states, shared by both, are kept here.
  */
 ytmusic-guide-entry-renderer tp-yt-paper-item:hover {
   background: ${colors.sidebarItemHover} !important;
@@ -404,7 +310,10 @@ ytmusic-guide-entry-renderer tp-yt-paper-item:hover .ytmd-nav-icon svg {
 }
 
 /* ========================================
-   Sidebar — Permanently Collapsed (Icon-only)
+   Sidebar: Collapsed Rail (Icon-only)
+   The rail is YTM's own mini guide (#mini-guide), slimmed to 56px. The full
+   guide keeps YTM's layout: it is only shown as the overlay drawer opened by
+   the hamburger, where it needs its labels.
    ======================================== */
 
 /* Hide the sidebar toggle/expand button */
@@ -416,17 +325,39 @@ tp-yt-paper-icon-button.guide-icon {
   display: none !important;
 }
 
-/* Sidebar container: always narrow, clip horizontal only */
-ytmusic-guide-renderer {
-  overflow-x: hidden !important;
-  overflow-y: visible !important;
+/*
+ * H9: at 615px and below (mweb layout) YTM shows no guide at all, and the
+ * nav bar hamburger is the only way to reach Home, Explore and Library.
+ * The guide's own header button stays hidden.
+ */
+ytmusic-app-layout[is-mweb-modernization-enabled] ytmusic-nav-bar #left-content #guide-button {
+  display: inline-flex !important;
+  -webkit-app-region: no-drag;
+}
+
+/*
+ * H2: offset the content by the rail width wherever YTM shows the mini guide,
+ * which is whenever ytmusic-app is guide-collapsed outside the mweb layout.
+ * YTM sets guide-collapsed itself from 616 to 935px, and the renderer sets it
+ * when the guide is persistent. The query is the exact complement of YTM's
+ * mweb breakpoint (615px and below), where YTM keeps the width at 0, as it
+ * does on hidden-guide pages.
+ */
+@media not (max-width: 615px) {
+  ytmusic-app[guide-collapsed]:not([is-hidden-guide-page]) {
+    --ytmusic-guide-width: 56px !important;
+  }
+}
+
+/* Rail container: 56px instead of YTM's 72px mini guide */
+#mini-guide,
+#mini-guide ytmusic-guide-renderer {
   width: 56px !important;
   min-width: 56px !important;
   max-width: 56px !important;
 }
 
 /* Allow scroller to show all items including custom entries */
-ytmusic-guide-section-renderer #items.scroller,
 #mini-guide ytmusic-guide-section-renderer #items {
   max-height: none !important;
   height: auto !important;
@@ -434,7 +365,6 @@ ytmusic-guide-section-renderer #items.scroller,
 }
 
 /* Ensure sections div doesn't clip */
-ytmusic-guide-renderer #sections,
 #mini-guide ytmusic-guide-renderer #sections {
   overflow: visible !important;
   height: auto !important;
@@ -460,9 +390,6 @@ ytmusic-guide-renderer #sections,
 
 #guide-wrapper,
 ytmusic-app-layout #guide-wrapper {
-  width: 56px !important;
-  min-width: 56px !important;
-  max-width: 56px !important;
   border: none !important;
   border-right: none !important;
   box-shadow: none !important;
@@ -470,7 +397,7 @@ ytmusic-app-layout #guide-wrapper {
 }
 
 /* Items: icon-only centered squares (single source of truth — see THM-04) */
-ytmusic-guide-entry-renderer tp-yt-paper-item {
+#mini-guide ytmusic-guide-entry-renderer tp-yt-paper-item {
   justify-content: center !important;
   padding: 8px !important;
   margin: 2px auto !important;
@@ -489,39 +416,33 @@ ytmusic-guide-entry-renderer tp-yt-paper-item {
               margin ${transitions.xslow} ${transitions.smoothOut} !important;
 }
 
-/* Hide all text in sidebar */
-ytmusic-guide-entry-renderer yt-formatted-string,
-ytmusic-guide-entry-renderer .guide-entry-title,
-ytmusic-guide-entry-renderer .title,
-ytmusic-guide-entry-renderer a > span,
-ytmusic-guide-entry-renderer tp-yt-paper-item > :not(.ytmd-nav-icon):not(yt-icon):not(iron-icon):not(a) {
+/* Hide all text in the rail */
+#mini-guide ytmusic-guide-entry-renderer yt-formatted-string,
+#mini-guide ytmusic-guide-entry-renderer .title,
+#mini-guide ytmusic-guide-entry-renderer a > span,
+#mini-guide ytmusic-guide-entry-renderer tp-yt-paper-item > :not(.ytmd-nav-icon):not(yt-icon):not(iron-icon):not(a) {
   display: none !important;
 }
 
-/* Section headers hidden */
-ytmusic-guide-section-renderer > .header {
-  display: none !important;
-}
-
-/* Sidebar hover */
-ytmusic-guide-entry-renderer tp-yt-paper-item:hover {
+/* Rail hover */
+#mini-guide ytmusic-guide-entry-renderer tp-yt-paper-item:hover {
   background: ${colors.sidebarItemHover} !important;
 }
 
-/* Sidebar selected item */
-ytmusic-guide-entry-renderer[active] tp-yt-paper-item,
-ytmusic-guide-entry-renderer.iron-selected tp-yt-paper-item {
+/* Rail selected item */
+#mini-guide ytmusic-guide-entry-renderer[active] tp-yt-paper-item,
+#mini-guide ytmusic-guide-entry-renderer.iron-selected tp-yt-paper-item {
   background: ${colors.sidebarItemActive} !important;
   border-radius: ${borderRadius.lg} !important;
 }
 
 /* Hide secondary sections (playlists list) — we use our own icons */
-ytmusic-guide-section-renderer + ytmusic-guide-section-renderer {
+#mini-guide ytmusic-guide-section-renderer + ytmusic-guide-section-renderer {
   display: none !important;
 }
 
 /* Hide dividers inside sections */
-ytmusic-guide-section-renderer #divider {
+#mini-guide ytmusic-guide-section-renderer #divider {
   display: none !important;
 }
 
@@ -535,9 +456,7 @@ ytmusic-guide-section-renderer #divider {
   left: 52px;
   top: 50%;
   transform: translateY(-50%);
-  background: ${colors.glassBg};
-  backdrop-filter: ${glass.blur};
-  -webkit-backdrop-filter: ${glass.blur};
+  background: ${colors.surfaceBg};
   border: 1px solid ${colors.glassBorder};
   border-radius: ${borderRadius.md};
   padding: 4px 10px;
@@ -552,6 +471,14 @@ ytmusic-guide-section-renderer #divider {
 }
 .ytmd-custom-entry:hover::after {
   opacity: 1;
+}
+/* M12: tooltips keep their glass unless the OS asks for reduced transparency */
+@media not (prefers-reduced-transparency: reduce) {
+  .ytmd-custom-entry::after {
+    background: ${colors.glassBg};
+    backdrop-filter: ${glass.blur};
+    -webkit-backdrop-filter: ${glass.blur};
+  }
 }
 
 /* ========================================
@@ -568,15 +495,16 @@ a, button, tp-yt-paper-icon-button, yt-icon {
               transform ${transitions.fast} ${transitions.easeOut} !important;
 }
 
-/* Card hover lift — gentle and smooth both ways */
-ytmusic-two-row-item-renderer,
-ytmusic-responsive-list-item-renderer {
-  transition: transform ${transitions.xslow} ${transitions.smoothOut},
-              box-shadow ${transitions.xslow} ${transitions.smoothOut} !important;
+/*
+ * Card hover lift. M11: cards only, with a short transform-only transition.
+ * List rows no longer lift: hovering rows while scrolling a long playlist
+ * restarted a 550ms transform on every row under the pointer.
+ */
+ytmusic-two-row-item-renderer {
+  transition: transform ${transitions.fast} ${transitions.smoothOut} !important;
 }
 
-ytmusic-two-row-item-renderer:hover,
-ytmusic-responsive-list-item-renderer:hover {
+ytmusic-two-row-item-renderer:hover {
   transform: translateY(-2px);
 }
 
@@ -587,15 +515,22 @@ ytmusic-responsive-list-item-renderer .image-wrapper img,
   border-radius: ${borderRadius.lg} !important;
 }
 
-/* Context menus: glass effect */
+/* Context menus: glass effect, opaque with reduced transparency (M12) */
 tp-yt-paper-listbox,
 tp-yt-iron-dropdown .dropdown-content {
-  background: ${colors.glassBg} !important;
-  backdrop-filter: ${glass.blur} !important;
-  -webkit-backdrop-filter: ${glass.blur} !important;
+  background: ${colors.surfaceBg} !important;
   border-radius: ${borderRadius.lg} !important;
   border: 1px solid ${colors.glassBorder} !important;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+}
+
+@media not (prefers-reduced-transparency: reduce) {
+  tp-yt-paper-listbox,
+  tp-yt-iron-dropdown .dropdown-content {
+    background: ${colors.glassBg} !important;
+    backdrop-filter: ${glass.blur} !important;
+    -webkit-backdrop-filter: ${glass.blur} !important;
+  }
 }
 
 /* ========================================
@@ -628,15 +563,21 @@ ytmusic-multi-page-menu {
   box-shadow: none !important;
 }
 
-/* Main menu renderer — glass panel */
+/* Main menu renderer: glass panel, opaque with reduced transparency (M12) */
 ytmusic-multi-page-menu-renderer {
-  background: rgba(20, 20, 20, 0.65) !important;
-  backdrop-filter: ${glass.blur} !important;
-  -webkit-backdrop-filter: ${glass.blur} !important;
+  background: ${colors.surfaceBg} !important;
   border: 1px solid rgba(255, 255, 255, 0.1) !important;
   border-radius: ${borderRadius.xl} !important;
   box-shadow: 0 16px 64px rgba(0, 0, 0, 0.5), 0 0 1px rgba(255, 255, 255, 0.08) inset !important;
   overflow: hidden !important;
+}
+
+@media not (prefers-reduced-transparency: reduce) {
+  ytmusic-multi-page-menu-renderer {
+    background: rgba(20, 20, 20, 0.65) !important;
+    backdrop-filter: ${glass.blur} !important;
+    -webkit-backdrop-filter: ${glass.blur} !important;
+  }
 }
 
 /* Header (avatar, name, handle) */
@@ -755,44 +696,44 @@ ytmusic-player-bar {
 }
 
 /* ========================================
-   Search Box — Glass Pill
+   Search Box: Pill
    ======================================== */
 
+/*
+ * H7: the host must not clip. YTM renders the suggestion list inside it,
+ * below the search field, so overflow: hidden made the suggestions invisible.
+ */
 ytmusic-search-box {
-  border-radius: ${borderRadius.pill} !important;
-  overflow: hidden !important;
+  overflow: visible !important;
 }
 
-ytmusic-search-box #input {
+/* The pill sits on YTM's .search-box, which wraps the icon, input and clear button */
+ytmusic-search-box .search-box {
   background: rgba(255, 255, 255, 0.06) !important;
-  backdrop-filter: ${glass.blurLight} !important;
-  -webkit-backdrop-filter: ${glass.blurLight} !important;
   border: 1px solid rgba(255, 255, 255, 0.08) !important;
   border-radius: ${borderRadius.pill} !important;
-  padding-left: 16px !important;
   transition: background ${transitions.normal} ${transitions.easeOut},
               border-color ${transitions.normal} ${transitions.easeOut},
               box-shadow ${transitions.normal} ${transitions.easeOut} !important;
 }
 
-ytmusic-search-box #input:focus-within {
+ytmusic-search-box .search-box:focus-within {
   background: ${colors.sidebarItemActive} !important;
   border-color: ${colors.glassBorderHover} !important;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 4px 16px rgba(0, 0, 0, 0.3) !important;
 }
 
-ytmusic-search-box #input input {
-  font-family: ${typography.fontFamily} !important;
-  padding-left: 8px !important;
+/*
+ * YTM frames the host with a border and the container with a drop shadow as
+ * soon as a query is set. The host is no longer a rounded clip, so that frame
+ * would draw a square around the pill: keep it for the open list only.
+ */
+ytmusic-search-box:not([opened]) {
+  border-color: transparent !important;
 }
 
-ytmusic-search-box .search-icon {
-  color: ${colors.textTertiary} !important;
-  transition: color ${transitions.normal} ${transitions.easeOut} !important;
-}
-
-ytmusic-search-box #input:focus-within .search-icon {
-  color: rgba(255, 255, 255, 0.8) !important;
+ytmusic-search-box:not([opened]) .search-container {
+  box-shadow: none !important;
 }
 
 /* ========================================
@@ -832,7 +773,6 @@ ytmusic-immersive-carousel-renderer {
 }
 
 /* Page container smooth opacity */
-#content-page,
 ytmusic-browse-response,
 #contents.ytmusic-section-list-renderer,
 #contents.ytmusic-shelf-renderer,
@@ -912,8 +852,7 @@ ytmusic-grid-renderer #contents > *:nth-child(n+6) { animation: ytmd-page-fade-i
   }
 
   /* Cancel the hover lift so motion-sensitive users get no translate jumps */
-  ytmusic-two-row-item-renderer:hover,
-  ytmusic-responsive-list-item-renderer:hover {
+  ytmusic-two-row-item-renderer:hover {
     transform: none !important;
   }
 }
