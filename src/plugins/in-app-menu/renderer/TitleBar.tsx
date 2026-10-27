@@ -469,11 +469,11 @@ export const TitleBar = (props: TitleBarProps) => {
       ref={(el) => (titleBar = el)}
     >
       <IconButton
-        aria-label={t('plugins.in-app-menu.templates.menu-button')}
         aria-expanded={
           autoCollapsed() ? openTarget() === menuToggle() : undefined
         }
         aria-haspopup={autoCollapsed() ? 'menu' : undefined}
+        aria-label={t('plugins.in-app-menu.templates.menu-button')}
         onClick={(e) => handleMenuToggle(e.detail === 0)}
         onKeyDown={(e) => {
           if (e.key === 'ArrowDown' && autoCollapsed()) {
