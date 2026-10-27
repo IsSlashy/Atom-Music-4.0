@@ -250,7 +250,11 @@ export const injectCpuTamerByDomMutation = ((__CONTEXT__) => {
 
       const dFunc = (propFunc) => {
         return (cid) => {
-          if (cid) inExec.delete(cid) || propFunc(cid);
+          if (!cid) return;
+          // A timer still waiting in wFunc must also be cleared natively,
+          // otherwise an interval cleared during its wait keeps firing.
+          inExec.delete(cid);
+          propFunc(cid);
         };
       };
 
