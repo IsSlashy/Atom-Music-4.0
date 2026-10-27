@@ -1,7 +1,7 @@
-import { deepmerge } from 'deepmerge-ts';
 import { allPlugins } from 'virtual:plugins';
 
 import * as config from '@/config';
+import { mergePluginConfig } from '@/config/plugins';
 import { setApplicationMenu } from '@/menu';
 
 import { LoggerPrefix } from '@/utils';
@@ -18,7 +18,7 @@ const createContext = (
   win: BrowserWindow,
 ): MenuContext<PluginConfig> => ({
   getConfig: async () =>
-    deepmerge(
+    mergePluginConfig(
       (await allPlugins())[id].config ?? { enabled: false },
       config.get(`plugins.${id}`) ?? {},
     ) as PluginConfig,
@@ -73,7 +73,7 @@ export const loadAllMenuPlugins = async (win: BrowserWindow) => {
   const pluginConfigs = config.plugins.getPlugins();
 
   for (const [pluginId, pluginDef] of Object.entries(await allPlugins())) {
-    const config = deepmerge(
+    const config = mergePluginConfig(
       pluginDef.config ?? { enabled: false },
       pluginConfigs[pluginId] ?? {},
     );

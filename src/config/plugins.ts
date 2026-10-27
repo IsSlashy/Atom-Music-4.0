@@ -1,4 +1,4 @@
-import { deepmerge } from 'deepmerge-ts';
+import { deepmergeCustom } from 'deepmerge-ts';
 import { allPlugins } from 'virtual:plugins';
 
 import { store } from './store';
@@ -7,12 +7,17 @@ import { restart } from '@/providers/app-controls';
 
 import type { PluginConfig } from '@/types/plugins';
 
+// Merges a plugin's defaults with its stored config. Arrays such as
+// `pip-position` or `ffmpegArgs` are values, so the stored one replaces the
+// default instead of being appended to it.
+export const mergePluginConfig = deepmergeCustom({ mergeArrays: false });
+
 export function getPlugins() {
   return store.get('plugins') as Record<string, PluginConfig>;
 }
 
 export async function isEnabled(plugin: string) {
-  const pluginConfig = deepmerge(
+  const pluginConfig = mergePluginConfig(
     (await allPlugins())[plugin].config ?? { enabled: false },
     (store.get('plugins') as Record<string, PluginConfig>)[plugin] ?? {},
   );

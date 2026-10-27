@@ -1,9 +1,9 @@
-import { deepmerge } from 'deepmerge-ts';
 import { allPlugins, preloadPlugins } from 'virtual:plugins';
 
 import { LoggerPrefix, startPlugin, stopPlugin } from '@/utils';
 
 import * as config from '@/config';
+import { mergePluginConfig } from '@/config/plugins';
 
 import { t } from '@/i18n';
 
@@ -16,7 +16,7 @@ const loadedPluginMap: Record<
 > = {};
 const createContext = (id: string): PreloadContext<PluginConfig> => ({
   getConfig: async () =>
-    deepmerge(
+    mergePluginConfig(
       (await allPlugins())[id].config ?? { enabled: false },
       config.get(`plugins.${id}`) ?? {},
     ) as PluginConfig,
@@ -86,8 +86,8 @@ export const loadAllPreloadPlugins = async () => {
   const pluginConfigs = config.plugins.getPlugins();
 
   for (const [pluginId, pluginDef] of Object.entries(await preloadPlugins())) {
-    const config = deepmerge(
-      pluginDef.config ?? { enable: false },
+    const config = mergePluginConfig(
+      pluginDef.config ?? { enabled: false },
       pluginConfigs[pluginId] ?? {},
     );
 
