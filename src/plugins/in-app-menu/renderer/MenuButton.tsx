@@ -11,6 +11,8 @@ const menuStyle = cacheNoArgs(
     justify-content: center;
     align-items: center;
     align-self: stretch;
+    /* the title bar collapses the menus when they do not fit, they never shrink */
+    flex-shrink: 0;
 
     padding: 2px 8px;
     border-radius: 4px;
@@ -28,6 +30,11 @@ const menuStyle = cacheNoArgs(
     &[data-selected='true'] {
       background-color: rgba(255, 255, 255, 0.2);
     }
+
+    &:focus-visible {
+      outline: 2px solid #3ea6ff;
+      outline-offset: -2px;
+    }
   `,
 );
 
@@ -41,11 +48,9 @@ export const MenuButton = (props: MenuButtonProps) => {
   const handleKeyDown = (
     event: KeyboardEvent & { currentTarget: HTMLLIElement; target: Element },
   ) => {
-    if (
-      event.key === 'Enter' ||
-      event.key === ' ' ||
-      event.key === 'ArrowDown'
-    ) {
+    // Enter and Space toggle the menu, ArrowDown is handled by the title bar
+    // since it also moves the focus into the opened panel
+    if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       event.currentTarget.click();
     }
@@ -61,13 +66,13 @@ export const MenuButton = (props: MenuButtonProps) => {
   return (
     <li
       {...leftProps}
+      aria-expanded={props.selected ?? false}
+      aria-haspopup={'menu'}
       class={menuStyle()}
       data-selected={props.selected}
-      role={'menuitem'}
-      tabIndex={0}
-      aria-haspopup={'menu'}
-      aria-expanded={props.selected ?? false}
       onKeyDown={handleKeyDown}
+      role={'menuitem'}
+      tabIndex={props.tabIndex ?? 0}
     >
       {local.text}
     </li>

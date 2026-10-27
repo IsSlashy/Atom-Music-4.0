@@ -17,6 +17,7 @@ export type SubMenuPanelProps = {
   anchor: Accessor<HTMLElement | null>;
   open: boolean;
   level: number[];
+  name?: string;
   ref: (el: HTMLElement | null) => void;
   children: JSX.Element;
 };
@@ -39,6 +40,7 @@ export const SubMenuPanel = (props: SubMenuPanelProps) => {
       </svg>
       <Panel
         anchor={props.anchor()}
+        aria-label={props.name}
         data-level={props.level.join('/')}
         offset={{ mainAxis: 8 }}
         open={props.open}

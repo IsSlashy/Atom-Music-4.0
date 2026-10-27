@@ -1,10 +1,16 @@
-import { createSignal, Match, Show, Switch } from 'solid-js';
+import { createSignal, Match, Show, Switch, useContext } from 'solid-js';
 import { type JSX } from 'solid-js/jsx-runtime';
 import { css } from 'solid-styled-components';
 
 import { cacheNoArgs } from '@/providers/decorators';
 import { ToolTipPopup } from './ToolTipPopup';
 import { SubMenuPanel } from './SubMenuPanel';
+import {
+  focusMenuItem,
+  focusSiblingMenuItem,
+  MenuPanelContext,
+  type MenuPanelContextValue,
+} from './keyboard';
 
 const itemStyle = cacheNoArgs(
   () => css`
@@ -37,6 +43,11 @@ const itemStyle = cacheNoArgs(
 
     &[data-selected='true'] {
       background-color: rgba(255, 255, 255, 0.2);
+    }
+
+    &:focus-visible {
+      outline: 2px solid #3ea6ff;
+      outline-offset: -2px;
     }
 
     & * {
@@ -80,6 +91,19 @@ const itemChipStyle = cacheNoArgs(
   `,
 );
 
+const menuKeys = [
+  'Enter',
+  ' ',
+  'ArrowDown',
+  'ArrowUp',
+  'ArrowLeft',
+  'ArrowRight',
+  'Home',
+  'End',
+  'Escape',
+  'Tab',
+];
+
 const getParents = (element: Element | null): (HTMLElement | null)[] => {
   const parents: (HTMLElement | null)[] = [];
   let now = element;
@@ -98,6 +122,7 @@ type BasePanelItemProps = {
   chip?: string;
   toolTip?: string;
   commandId?: number;
+  enabled?: boolean;
 };
 type NormalPanelItemProps = BasePanelItemProps & {
   type: 'normal';
@@ -128,6 +153,28 @@ export const PanelItem = (props: PanelItemProps) => {
   const [toolTipOpen, setToolTipOpen] = createSignal(false);
   const [anchor, setAnchor] = createSignal<HTMLElement | null>(null);
   const [child, setChild] = createSignal<HTMLElement | null>(null);
+
+  const parentMenu = useContext(MenuPanelContext);
+  const submenuContext: MenuPanelContextValue = {
+    isSubmenu: true,
+    close: () => {
+      setOpen(false);
+      anchor()?.focus();
+    },
+    closeAll: () => parentMenu?.closeAll(),
+  };
+
+  const role = () => {
+    if (props.type === 'checkbox') return 'menuitemcheckbox';
+    if (props.type === 'radio') return 'menuitemradio';
+    return 'menuitem';
+  };
+
+  const openSubmenu = () => {
+    setOpen(true);
+    // focus once the submenu panel is mounted
+    requestAnimationFrame(() => focusMenuItem(child(), 'first'));
+  };
 
   const handleHover = (event: MouseEvent) => {
     setToolTipOpen(true);
@@ -215,38 +262,54 @@ export const PanelItem = (props: PanelItemProps) => {
 
   return (
     <li
+      aria-checked={
+        props.type === 'checkbox' || props.type === 'radio'
+          ? props.checked
+          : undefined
+      }
+      aria-disabled={props.enabled === false ? true : undefined}
+      aria-expanded={props.type === 'submenu' ? open() : undefined}
+      aria-haspopup={props.type === 'submenu' ? 'menu' : undefined}
       class={itemStyle()}
       data-selected={open()}
       onClick={handleClick}
-      onMouseEnter={handleHover}
-      ref={setAnchor}
-      tabIndex={0}
       onKeyDown={(e: KeyboardEvent) => {
+        const item = e.currentTarget as HTMLElement;
+        // the panel is portaled, but Solid still bubbles its events to the
+        // parent item and the title bar, which would handle the key again
+        if (menuKeys.includes(e.key)) e.stopPropagation();
+
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          handleClick();
+          if (props.type === 'submenu') openSubmenu();
+          else if (props.enabled !== false) handleClick();
           return;
         }
 
-        if (e.key === 'ArrowDown') {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           e.preventDefault();
-          const next = (e.currentTarget as HTMLElement)
-            .nextElementSibling as HTMLElement | null;
-          next?.focus();
+          focusSiblingMenuItem(item, e.key === 'ArrowDown' ? 1 : -1);
           return;
         }
 
-        if (e.key === 'ArrowUp') {
+        if (e.key === 'Home' || e.key === 'End') {
           e.preventDefault();
-          const prev = (e.currentTarget as HTMLElement)
-            .previousElementSibling as HTMLElement | null;
-          prev?.focus();
+          focusMenuItem(
+            item.parentElement,
+            e.key === 'Home' ? 'first' : 'last',
+          );
           return;
         }
 
         if (e.key === 'ArrowRight' && props.type === 'submenu') {
           e.preventDefault();
-          setOpen(true);
+          openSubmenu();
+          return;
+        }
+
+        if (e.key === 'ArrowLeft' && parentMenu?.isSubmenu) {
+          e.preventDefault();
+          parentMenu.close();
           return;
         }
 
@@ -254,12 +317,23 @@ export const PanelItem = (props: PanelItemProps) => {
           e.preventDefault();
           if (open()) {
             setOpen(false);
+          } else if (parentMenu) {
+            parentMenu.close();
           } else {
-            (e.currentTarget as HTMLElement).blur();
+            item.blur();
           }
           return;
         }
+
+        if (e.key === 'Tab') {
+          // no preventDefault: the focus moves on from the menu bar button
+          parentMenu?.closeAll();
+        }
       }}
+      onMouseEnter={handleHover}
+      ref={setAnchor}
+      role={role()}
+      tabIndex={-1}
     >
       <Switch fallback={<div class={itemIconStyle()} />}>
         <Match when={props.type === 'checkbox' && props.checked}>
@@ -311,18 +385,21 @@ export const PanelItem = (props: PanelItemProps) => {
       <Show when={props.type === 'submenu'}>
         <SubMenuPanel
           anchor={anchor}
-          open={open()}
           level={props.type === 'submenu' ? props.level : []}
+          name={props.name}
+          open={open()}
           ref={setChild}
         >
-          {props.type === 'submenu' && props.children}
+          <MenuPanelContext.Provider value={submenuContext}>
+            {props.type === 'submenu' && props.children}
+          </MenuPanelContext.Provider>
         </SubMenuPanel>
       </Show>
       <Show when={props.toolTip}>
         <ToolTipPopup
           anchor={anchor}
-          text={props.toolTip!}
           open={toolTipOpen()}
+          text={props.toolTip!}
         />
       </Show>
     </li>

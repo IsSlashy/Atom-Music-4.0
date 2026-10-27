@@ -156,6 +156,7 @@ export const Panel = (props: PanelProps) => {
       >
         <Show when={local.open}>
           <ul
+            role={'menu'}
             {...leftProps}
             class={panelStyle()}
             data-ytmd-sub-panel={true}

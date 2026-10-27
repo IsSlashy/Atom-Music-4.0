@@ -34,20 +34,25 @@ ytmusic-app-layout > [slot='nav-bar'],
     var(--ytmusic-nav-bar-height) + var(--menu-bar-height, 36px)
   ) !important;
 }
-ytmusic-app[is-bauhaus-sidenav-enabled] #guide-spacer.ytmusic-app,
-ytmusic-app[is-bauhaus-sidenav-enabled] #mini-guide-spacer.ytmusic-app {
+/* YTM no longer sets [is-bauhaus-sidenav-enabled]: offset the guides unconditionally */
+#guide-spacer.ytmusic-app,
+#mini-guide-spacer.ytmusic-app {
   margin-top: calc(
     var(--ytmusic-nav-bar-height) + var(--menu-bar-height, 36px)
   ) !important;
 }
 
+/* below 935px the full guide is a drawer with its own header (mweb included):
+   it only has to clear the title bar. This spacer sits inside the drawer, so
+   it is what moves the mweb drawer content by --menu-bar-height, offsetting
+   the drawer itself as well would leave an empty band under the title bar */
 @media (max-width: 935px) {
-  ytmusic-app[is-bauhaus-sidenav-enabled] #guide-spacer.ytmusic-app {
+  #guide-spacer.ytmusic-app {
     margin-top: calc(
       var(--menu-bar-height, 36px)
     ) !important;
   }
-  ytmusic-app[is-bauhaus-sidenav-enabled] #mini-guide-spacer.ytmusic-app {
+  #mini-guide-spacer.ytmusic-app {
     margin-top: calc(
       var(--ytmusic-nav-bar-height) + var(--menu-bar-height, 36px)
     ) !important;
