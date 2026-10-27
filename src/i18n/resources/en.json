@@ -164,6 +164,20 @@
                   "placeholder": "Example: YouTube Music"
                 }
               },
+              "player-bar": {
+                "auto": "Site's choice",
+                "classic": "Classic",
+                "dialog": {
+                  "button": {
+                    "later": "Later",
+                    "reload": "Reload now"
+                  },
+                  "message": "The player bar changes when the page reloads.",
+                  "title": "Player bar"
+                },
+                "label": "Player bar",
+                "new": "New"
+              },
               "remove-upgrade-button": "Remove upgrade button",
               "theme": {
                 "dialog": {

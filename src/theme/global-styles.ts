@@ -181,6 +181,60 @@ ytmusic-player-bar #play-pause-button yt-icon {
   height: 28px !important;
 }
 
+/*
+ * H1: YTM serves part of its visitors a new player bar (ytmusic-miniplayer)
+ * instead of ytmusic-player-bar. It gets the same look as the classic one.
+ */
+ytmusic-app-layout > .ytMusicMiniPlayerHost {
+  background: ${colors.surfaceBg} !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3) !important;
+}
+
+.ytMusicMiniPlayerHost .ytmusicPlayerControlsPlayPauseButton button {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: ${borderRadius.round} !important;
+  color: ${colors.white} !important;
+  transition: background ${transitions.normal} ${transitions.smoothOut},
+              border-color ${transitions.normal} ${transitions.smoothOut},
+              transform ${transitions.fast} ${transitions.smoothOut} !important;
+}
+
+.ytMusicMiniPlayerHost .ytmusicPlayerControlsPlayPauseButton button:hover {
+  background: rgba(255, 255, 255, 0.18) !important;
+  border-color: ${colors.glassBorderHover} !important;
+  transform: scale(1.08) !important;
+}
+
+.ytMusicMiniPlayerHost .ytmusicPlayerControlsPlayPauseButton button:active {
+  transform: scale(0.95) !important;
+}
+
+.ytMusicMiniPlayerHost .ytmusicPlayerControlsPreviousButton button,
+.ytMusicMiniPlayerHost .ytmusicPlayerControlsNextButton button {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid ${colors.sidebarItemHover} !important;
+  border-radius: ${borderRadius.round} !important;
+  color: ${colors.textSecondary} !important;
+  transition: background ${transitions.normal} ${transitions.smoothOut},
+              border-color ${transitions.normal} ${transitions.smoothOut},
+              color ${transitions.normal} ${transitions.smoothOut},
+              transform ${transitions.fast} ${transitions.smoothOut} !important;
+}
+
+.ytMusicMiniPlayerHost .ytmusicPlayerControlsPreviousButton button:hover,
+.ytMusicMiniPlayerHost .ytmusicPlayerControlsNextButton button:hover {
+  background: ${colors.sidebarItemActive} !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: ${colors.white} !important;
+}
+
+.ytMusicMiniPlayerHost .ytmusicPlayerControlsPreviousButton button:active,
+.ytMusicMiniPlayerHost .ytmusicPlayerControlsNextButton button:active {
+  transform: scale(0.90) !important;
+}
+
 /* Responsive: narrow window adjustments */
 @media (max-width: 600px) {
   ytmusic-app-layout {
@@ -217,6 +271,9 @@ yt-formatted-string,
 ytmusic-player-bar,
 ytmusic-player-bar .title,
 ytmusic-player-bar .byline,
+.ytMusicMiniPlayerHost,
+.ytmusicTrackInfoTitle,
+.ytmusicTrackInfoByline,
 .tab-title,
 ytmusic-search-box #input,
 tp-yt-paper-item {
@@ -227,6 +284,7 @@ tp-yt-paper-item {
 
 yt-formatted-string.title,
 .title.ytmusic-player-bar,
+.ytmusicTrackInfoTitle,
 ytmusic-responsive-list-item-renderer .title,
 ytmusic-two-row-item-renderer .title {
   font-weight: ${typography.fontWeightSemibold} !important;
@@ -235,6 +293,7 @@ ytmusic-two-row-item-renderer .title {
 
 yt-formatted-string.subtitle,
 .byline.ytmusic-player-bar,
+.ytmusicTrackInfoByline,
 .subtitle {
   letter-spacing: ${typography.letterSpacingNormal};
 }
