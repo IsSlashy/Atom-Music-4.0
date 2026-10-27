@@ -1,4 +1,4 @@
-import { contextBridge, webFrame } from 'electron';
+import { webFrame } from 'electron';
 
 import { blockers } from './types';
 import { createPlugin } from '@/utils';
@@ -9,7 +9,7 @@ import {
 } from './blocker';
 
 import { inject, isInjected } from './injectors/inject';
-import { loadAdSpeedup } from './adSpeedup';
+import { loadAdSpeedup, unloadAdSpeedup } from './adSpeedup';
 
 import { t } from '@/i18n';
 
@@ -79,6 +79,16 @@ export default createPlugin({
         loadAdSpeedup();
       }
     },
+    onConfigChange(newConfig) {
+      if (newConfig.blocker === blockers.AdSpeedup) {
+        loadAdSpeedup();
+      } else {
+        unloadAdSpeedup();
+      }
+    },
+    stop() {
+      unloadAdSpeedup();
+    },
   },
   backend: {
     mainWindow: null as BrowserWindow | null,
@@ -96,9 +106,8 @@ export default createPlugin({
       }
     },
     stop({ window }) {
-      if (isBlockerEnabled(window.webContents.session)) {
-        unloadAdBlockerEngine(window.webContents.session);
-      }
+      // Also cancels lists still downloading from a cold start
+      unloadAdBlockerEngine(window.webContents.session);
     },
     async onConfigChange(newConfig) {
       if (this.mainWindow) {
@@ -112,35 +121,56 @@ export default createPlugin({
             newConfig.additionalBlockLists,
             newConfig.disableDefaultLists,
           );
+        } else if (newConfig.blocker !== blockers.WithBlocklists) {
+          unloadAdBlockerEngine(this.mainWindow.webContents.session);
         }
       }
     },
   },
   preload: {
     // see #1478
-    script: `const _prunerFn = window._pruner;
-    window._pruner = undefined;
+    // Runs in the main world: the pruner is defined here rather than exposed
+    // through contextBridge, which cloned every parsed object across worlds.
+    // JSON.parse('null') and primitives pass through untouched.
+    script: `{
+    const prune = (o) => {
+      if (o && typeof o === 'object') {
+        delete o.playerAds;
+        delete o.adPlacements;
+        delete o.adSlots;
+        for (const key of ['playerResponse', 'ytInitialPlayerResponse']) {
+          const response = o[key];
+          if (response && typeof response === 'object') {
+            delete response.playerAds;
+            delete response.adPlacements;
+            delete response.adSlots;
+          }
+        }
+      }
+      return o;
+    };
     JSON.parse = new Proxy(JSON.parse, {
       apply() {
-        return _prunerFn(Reflect.apply(...arguments));
+        return prune(Reflect.apply(...arguments));
       },
     });
     Response.prototype.json = new Proxy(Response.prototype.json, {
       apply() {
-        return Reflect.apply(...arguments).then((o) => _prunerFn(o));
+        return Reflect.apply(...arguments).then((o) => prune(o));
       },
-    }); 0`,
+    });
+    } 0`,
     async start({ getConfig }) {
       const config = await getConfig();
 
       if (config.blocker === blockers.InPlayer && !isInjected()) {
-        inject(contextBridge);
+        inject();
         await webFrame.executeJavaScript(this.script);
       }
     },
     async onConfigChange(newConfig) {
       if (newConfig.blocker === blockers.InPlayer && !isInjected()) {
-        inject(contextBridge);
+        inject();
         await webFrame.executeJavaScript(this.script);
       }
     },

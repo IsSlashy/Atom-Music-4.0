@@ -1,5 +1,3 @@
-import type { ContextBridge } from 'electron';
-
-export const inject: (contextBridge: ContextBridge) => void;
+export const inject: () => void;
 
 export const isInjected: () => boolean;

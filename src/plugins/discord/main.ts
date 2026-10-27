@@ -9,6 +9,9 @@ import { TIME_UPDATE_DEBOUNCE_MS } from './constants';
 import type { DiscordPluginConfig } from './index';
 
 export let discordService = null as DiscordService | null;
+// start() runs again each time the plugin is enabled, and song-info callbacks
+// cannot be unregistered, so the callback is registered once per app run.
+let callbackRegistered = false;
 
 export const backend = createBackend<
   {
@@ -25,8 +28,11 @@ export const backend = createBackend<
     discordService = new DiscordService(ctx.window, config);
 
     if (config.enabled) {
-      ctx.window.once('ready-to-show', () => {
+      const init = () => {
         discordService?.connect(!config.autoReconnect);
+
+        if (callbackRegistered) return;
+        callbackRegistered = true;
 
         registerCallback((songInfo, event) => {
           if (!discordService?.isConnected()) return;
@@ -42,7 +48,12 @@ export const backend = createBackend<
             }
           }
         });
-      });
+      };
+
+      // When the plugin is enabled from the menu, ready-to-show has already
+      // fired and would never call init.
+      if (ctx.window.isVisible()) init();
+      else ctx.window.once('ready-to-show', init);
     }
 
     ctx.ipc.on('ytmd:player-api-loaded', () => {
