@@ -9,9 +9,17 @@ export const restart = () => restartInternal();
 export const setupAppControls = () => {
   ipcMain.on('ytmd:restart', restart);
   ipcMain.handle('ytmd:get-downloads-folder', () => app.getPath('downloads'));
-  ipcMain.on('ytmd:reload', () =>
-    BrowserWindow.getFocusedWindow()?.webContents.loadURL(config.get('url')),
-  );
+  // The saved url comes from the page: only a YouTube Music page is loaded
+  // from it, as at launch (src/index.ts)
+  ipcMain.on('ytmd:reload', () => {
+    const savedUrl = URL.parse(config.get('url'));
+    const urlToLoad =
+      savedUrl?.protocol === 'https:' &&
+      savedUrl.hostname === 'music.youtube.com'
+        ? savedUrl.toString()
+        : config.defaultConfig.url;
+    BrowserWindow.getFocusedWindow()?.webContents.loadURL(urlToLoad);
+  });
   ipcMain.handle('ytmd:get-path', (_, ...args: string[]) => path.join(...args));
 };
 

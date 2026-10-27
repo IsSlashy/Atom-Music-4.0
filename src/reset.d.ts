@@ -53,8 +53,8 @@ declare global {
       t: typeof t;
     };
     /**
-     * Atom Music internal: plays a downloaded local file in-app, taking over
-     * the YTM player bar. Installed by `replaceNavIcons()` in renderer.ts.
+     * Atom Music internal: plays a downloaded local file in-app, with a bar of
+     * its own over the YTM player bar. Installed at module load in renderer.ts.
      */
     __ytmdPlayLocalFile?: (file: {
       name: string;

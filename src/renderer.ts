@@ -151,11 +151,13 @@ const listDownloads = async () =>
     | { folder: string; files: LibraryFile[] }
     | undefined;
 
-const getCover = async (filePath: string) => {
+// 'data' asks for a local cover inline, for the media session
+const getCover = async (filePath: string, format?: 'data') => {
   try {
     const result = (await window.ipcRenderer.invoke(
       'ytmd:get-cover',
       filePath,
+      format,
     )) as { imageSrc: string | null } | undefined;
     return result?.imageSrc ?? null;
   } catch {
@@ -602,14 +604,26 @@ const playLocalFile = (file: LocalFile) => {
       if (coverSrc) mainCover.src = coverSrc;
     }
     // The media session refuses ytmd-local images, and the page cannot read
-    // them to make a blob of them: SMTC then shows no picture
-    const artwork =
-      coverSrc && /^(https?|data|blob):/.test(coverSrc)
-        ? [{ src: coverSrc }]
-        : [];
-    applyMetadata(
-      new MediaMetadata({ title: songTitle, artist: songArtist, artwork }),
-    );
+    // them: the main process sends a local cover inline instead
+    const isMediaImage = (src: string | null | undefined): src is string =>
+      !!src && /^(https?|data|blob):/.test(src);
+    const applyArtwork = (src: string | null | undefined) =>
+      applyMetadata(
+        new MediaMetadata({
+          title: songTitle,
+          artist: songArtist,
+          artwork: isMediaImage(src) ? [{ src }] : [],
+        }),
+      );
+    applyArtwork(coverSrc);
+    if (coverSrc && !isMediaImage(coverSrc)) {
+      const shownSrc = coverSrc;
+      getCover(file.path, 'data').then((src) => {
+        if (localActive && coverSrc === shownSrc && isMediaImage(src)) {
+          applyArtwork(src);
+        }
+      });
+    }
   };
   // Fetch cover art if not already available
   if (!coverSrc) {
@@ -1940,7 +1954,13 @@ async function onApiLoaded() {
   );
 
   window.ipcRenderer.on('ytmd:toggle-mute', (_) => {
-    if (localPlayback) localPlayback.toggleMute();
+    if (localPlayback) return localPlayback.toggleMute();
+    // The classic bar's own handler also moves its slider to 0 and back. The
+    // new bar has none, so the player API toggles it.
+    const playerBar = queryControl<
+      HTMLElement & { onVolumeClick?: () => void }
+    >('playerBar');
+    if (playerBar?.onVolumeClick) playerBar.onVolumeClick();
     else if (api?.isMuted()) api.unMute();
     else api?.mute();
   });

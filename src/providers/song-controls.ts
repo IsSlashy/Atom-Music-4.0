@@ -4,26 +4,26 @@ import { type BrowserWindow, ipcMain } from 'electron';
 import { LikeType } from '@/types/datahost-get-state';
 
 // see protocol-handler.ts
-type ArgsType<T> = T | string[] | undefined;
+type ArgsType<T> = T | string | string[] | undefined;
 
+// handleProtocol spreads the words of a youtubemusic:// link, so a command
+// gets its argument as a string
 const parseNumberFromArgsType = (args: ArgsType<number>) => {
   if (typeof args === 'number') {
-    return args;
-  } else if (Array.isArray(args)) {
-    return Number(args[0]);
-  } else {
-    return null;
+    return Number.isFinite(args) ? args : null;
   }
+  const text = Array.isArray(args) ? args[0] : args;
+  if (typeof text !== 'string' || text.trim() === '') return null;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
 };
 
 const parseBooleanFromArgsType = (args: ArgsType<boolean>) => {
   if (typeof args === 'boolean') {
     return args;
-  } else if (Array.isArray(args)) {
-    return args[0] === 'true';
-  } else {
-    return null;
   }
+  const text = Array.isArray(args) ? args[0] : args;
+  return typeof text === 'string' ? text === 'true' : null;
 };
 
 const parseStringFromArgsType = (args: ArgsType<string>) => {
@@ -49,7 +49,7 @@ export const getSongControls = (win: BrowserWindow) => {
     seekTo: (seconds: ArgsType<number>) => {
       const secondsNumber = parseNumberFromArgsType(seconds);
       if (secondsNumber !== null) {
-        win.webContents.send('ytmd:seek-to', seconds);
+        win.webContents.send('ytmd:seek-to', secondsNumber);
       }
     },
     goBack: (seconds: ArgsType<number>) => {
@@ -61,7 +61,7 @@ export const getSongControls = (win: BrowserWindow) => {
     goForward: (seconds: ArgsType<number>) => {
       const secondsNumber = parseNumberFromArgsType(seconds);
       if (secondsNumber !== null) {
-        win.webContents.send('ytmd:seek-by', seconds);
+        win.webContents.send('ytmd:seek-by', secondsNumber);
       }
     },
     requestShuffleInformation: () => {
@@ -71,14 +71,14 @@ export const getSongControls = (win: BrowserWindow) => {
     switchRepeat: (n: ArgsType<number> = 1) => {
       const repeat = parseNumberFromArgsType(n);
       if (repeat !== null) {
-        win.webContents.send('ytmd:switch-repeat', n);
+        win.webContents.send('ytmd:switch-repeat', repeat);
       }
     },
     // General
     setVolume: (volume: ArgsType<number>) => {
       const volumeNumber = parseNumberFromArgsType(volume);
       if (volumeNumber !== null) {
-        win.webContents.send('ytmd:update-volume', volume);
+        win.webContents.send('ytmd:update-volume', volumeNumber);
       }
     },
     setFullscreen: (isFullscreen: ArgsType<boolean>) => {

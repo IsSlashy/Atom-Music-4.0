@@ -54,6 +54,19 @@ ytmusic-app-layout.pip ytmusic-player-bar ytmusic-menu-renderer {
   display: none !important;
 }
 
+/* the same for YTM's new player bar. Its menu button stays: the new bar has no
+   exit full screen button, so the menu's entry is the way out of PiP */
+ytmusic-app-layout.pip > .ytMusicMiniPlayerHost svg {
+  filter: drop-shadow(2px 4px 6px black);
+  color: white !important;
+  fill: white !important;
+}
+
+ytmusic-app-layout.pip > .ytMusicMiniPlayerHost .ytmusicTrackInfoThumbnailWrapper,
+ytmusic-app-layout.pip > .ytMusicMiniPlayerHost .ytmusicTrackInfoContentInfoWrapper {
+  display: none !important;
+}
+
 /* disable the video-toggle button when in PiP mode */
 ytmusic-app-layout.pip .video-switch-button {
   display: none !important;

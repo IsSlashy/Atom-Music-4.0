@@ -13,6 +13,8 @@ node_modules
 !.yarn/sdks
 !.yarn/versions
 .vite-inspect
+# Playwright's results of the last run
+test-results/
 
 .DS_Store
 

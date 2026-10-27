@@ -168,6 +168,59 @@ const invokeChannels = new Set([
   'ytmd:menu-event',
   'ytmd:set-config',
 ]);
+// Channels the page listens to (on, once) or stops listening to (off,
+// removeListener, removeAllListeners): what the main process sends to
+// src/renderer.ts, the song-info provider and the plugins' renderer code. A
+// script injected into the page cannot listen to the other channels nor drop
+// listeners on them. A new channel the page listens to must be added here.
+const listenChannels = new Set([
+  'changeVolume',
+  'close-all-in-app-menu-panel',
+  'config-changed',
+  'downloader-feedback',
+  'log',
+  'open-settings',
+  'plugin:enable',
+  'plugin:unload',
+  'refresh-in-app-menu',
+  'setVolume',
+  'toggle-in-app-menu',
+  'window-maximize',
+  'window-unmaximize',
+  'ytmd:add-to-queue',
+  'ytmd:clear-queue',
+  'ytmd:click-fullscreen-button',
+  'ytmd:get-fullscreen',
+  'ytmd:get-queue',
+  'ytmd:get-shuffle',
+  'ytmd:move-in-queue',
+  'ytmd:next-video',
+  'ytmd:pause',
+  'ytmd:pip-toggle',
+  'ytmd:play',
+  'ytmd:previous-video',
+  'ytmd:remove-from-queue',
+  'ytmd:search',
+  'ytmd:seek-by',
+  'ytmd:seek-to',
+  'ytmd:set-queue-index',
+  'ytmd:setup-autoplay-changed-listener',
+  'ytmd:setup-fullscreen-changed-listener',
+  'ytmd:setup-like-changed-listener',
+  'ytmd:setup-repeat-changed-listener',
+  'ytmd:setup-seeked-listener',
+  'ytmd:setup-shuffle-changed-listener',
+  'ytmd:setup-time-changed-listener',
+  'ytmd:setup-volume-changed-listener',
+  'ytmd:show-about',
+  'ytmd:shuffle',
+  'ytmd:switch-repeat',
+  'ytmd:toggle-mute',
+  'ytmd:toggle-play',
+  'ytmd:update-like',
+  'ytmd:update-song-info',
+  'ytmd:update-volume',
+]);
 // The page never needs a synchronous reply, and a sync send to a channel the
 // main process only handles with `handle()` never returns: it freezes the page.
 const sendSyncChannels = new Set<string>();
@@ -226,21 +279,33 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   on: (
     channel: string,
     listener: (event: IpcRendererEvent, ...args: unknown[]) => void,
-  ) => ipcRenderer.on(channel, listener),
-  off: (channel: string, listener: (...args: unknown[]) => void) =>
-    ipcRenderer.off(channel, listener),
+  ) => {
+    assertChannel(listenChannels, channel);
+    return ipcRenderer.on(channel, listener);
+  },
+  off: (channel: string, listener: (...args: unknown[]) => void) => {
+    assertChannel(listenChannels, channel);
+    return ipcRenderer.off(channel, listener);
+  },
   once: (
     channel: string,
     listener: (event: IpcRendererEvent, ...args: unknown[]) => void,
-  ) => ipcRenderer.once(channel, listener),
+  ) => {
+    assertChannel(listenChannels, channel);
+    return ipcRenderer.once(channel, listener);
+  },
   send: (channel: string, ...args: unknown[]) => {
     assertChannel(sendChannels, channel);
     ipcRenderer.send(channel, ...args);
   },
-  removeListener: (channel: string, listener: (...args: unknown[]) => void) =>
-    ipcRenderer.removeListener(channel, listener),
-  removeAllListeners: (channel: string) =>
-    ipcRenderer.removeAllListeners(channel),
+  removeListener: (channel: string, listener: (...args: unknown[]) => void) => {
+    assertChannel(listenChannels, channel);
+    return ipcRenderer.removeListener(channel, listener);
+  },
+  removeAllListeners: (channel: string) => {
+    assertChannel(listenChannels, channel);
+    return ipcRenderer.removeAllListeners(channel);
+  },
   invoke: async (channel: string, ...args: unknown[]): Promise<unknown> => {
     assertChannel(invokeChannels, channel);
     if (

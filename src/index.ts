@@ -232,10 +232,13 @@ const audioMimeTypes: Record<string, string> = {
   '.wav': 'audio/wav',
   '.webm': 'audio/webm',
 };
-const localMimeTypes: Record<string, string> = {
-  ...audioMimeTypes,
+const coverMimeTypes: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.png': 'image/png',
+};
+const localMimeTypes: Record<string, string> = {
+  ...audioMimeTypes,
+  ...coverMimeTypes,
 };
 const coverMimePattern = /^image\/(jpeg|png|webp|gif)$/;
 const coverDataUriPattern =
@@ -251,6 +254,8 @@ const coverHostSuffixes = [
 const MAX_LIBRARY_DEPTH = 3;
 // Bigger ID3 tags are not read for their cover
 const MAX_ID3_TAG_SIZE = 16 * 1024 * 1024;
+// Bigger cover files are not sent inline to the page
+const MAX_INLINE_COVER_SIZE = 4 * 1024 * 1024;
 
 type LibraryFile = {
   name: string;
@@ -599,14 +604,46 @@ ipcMain.handle('ytmd:list-downloads', async (event) => {
   };
 });
 
-// Cover of a library track, as a ytmd-local URL when it is stored locally
-ipcMain.handle('ytmd:get-cover', async (event, filePath: unknown) => {
-  if (!isTrustedSender(event)) return { imageSrc: null };
+// A local cover as a data: URI. The media session (SMTC) takes only http(s),
+// data and blob images, and the page cannot read ytmd-local to make one.
+const readCoverDataUri = async (coverSrc: string, audioPath: string) => {
+  const coverUrl = URL.parse(coverSrc);
+  let cover: { mime: string; data: Uint8Array } | null = null;
+  if (coverUrl?.hostname === 'cover') {
+    cover = await readEmbeddedCover(audioPath).catch(() => null);
+  } else if (coverUrl?.hostname === 'file') {
+    const file = await resolveLibraryFile(
+      coverUrl.searchParams.get('path'),
+      coverMimeTypes,
+    );
+    if (file && file.stat.size <= MAX_INLINE_COVER_SIZE) {
+      cover = {
+        mime: coverMimeTypes[path.extname(file.path).toLowerCase()],
+        data: await fs.promises.readFile(file.path),
+      };
+    }
+  }
+  return cover && cover.data.length <= MAX_INLINE_COVER_SIZE
+    ? `data:${cover.mime};base64,${Buffer.from(cover.data).toString('base64')}`
+    : null;
+};
 
-  const file = await resolveLibraryFile(filePath, audioMimeTypes);
-  if (!file) return { imageSrc: null };
-  return { imageSrc: await resolveCoverSrc(file.path, file.stat) };
-});
+// Cover of a library track, as a ytmd-local URL when it is stored locally, or
+// inline with format 'data'
+ipcMain.handle(
+  'ytmd:get-cover',
+  async (event, filePath: unknown, format?: unknown) => {
+    if (!isTrustedSender(event)) return { imageSrc: null };
+
+    const file = await resolveLibraryFile(filePath, audioMimeTypes);
+    if (!file) return { imageSrc: null };
+    const imageSrc = await resolveCoverSrc(file.path, file.stat);
+    if (format !== 'data' || !imageSrc?.startsWith('ytmd-local:')) {
+      return { imageSrc };
+    }
+    return { imageSrc: await readCoverDataUri(imageSrc, file.path) };
+  },
+);
 
 // Only web links leave the app: file:, ms-settings: and other schemes would
 // open local programs
