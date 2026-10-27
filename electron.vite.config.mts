@@ -16,7 +16,10 @@ import viteResolve from 'vite-plugin-resolve';
 
 import { withFilter } from 'vite';
 
-import { pluginVirtualModuleGenerator } from './vite-plugins/plugin-importer.mjs';
+import {
+  pluginStubLoader,
+  pluginVirtualModuleGenerator,
+} from './vite-plugins/plugin-importer.mjs';
 import pluginLoader from './vite-plugins/plugin-loader.mjs';
 import { i18nImporter } from './vite-plugins/i18n-importer.mjs';
 
@@ -42,6 +45,7 @@ export default defineConfig(({ mode }) => ({
     legacy,
     plugins: [
       pluginLoader('backend'),
+      pluginStubLoader(),
       viteResolve({
         'virtual:i18n': i18nImporter(),
         'virtual:plugins': pluginVirtualModuleGenerator('main'),
