@@ -1,5 +1,5 @@
-export const isMusicOrVideoTrack = () => {
-  for (const menuSelector of document.querySelectorAll<
+export const isMusicOrVideoTrack = (menu: ParentNode = document) => {
+  for (const menuSelector of menu.querySelectorAll<
     HTMLAnchorElement & {
       data: {
         watchEndpoint: {
@@ -41,7 +41,8 @@ export const isAlbumOrPlaylist = () => {
 };
 
 export const isPlayerMenu = (menu?: HTMLElement | null) => {
-  return (
+  // The element that opened the menu
+  const eventSink = (
     menu?.parentElement as
       | (HTMLElement & {
           ytEventForwardingBehavior: {
@@ -51,7 +52,12 @@ export const isPlayerMenu = (menu?: HTMLElement | null) => {
           };
         })
       | null
-  )?.ytEventForwardingBehavior?.forwarder_?.eventSink?.matches(
-    'ytmusic-menu-renderer.ytmusic-player-bar',
+  )?.ytEventForwardingBehavior?.forwarder_?.eventSink;
+
+  return (
+    !!eventSink &&
+    // Classic player bar, or the new one's "more" button
+    (eventSink.matches('ytmusic-menu-renderer.ytmusic-player-bar') ||
+      !!eventSink.closest('.ytMusicMiniPlayerMenuButton'))
   );
 };
