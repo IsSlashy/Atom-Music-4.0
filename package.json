@@ -14,6 +14,7 @@
     "url": "https://github.com/IsSlashy/Atom-Music-4.0"
   },
   "scripts": {
+    "postinstall": "pnpm install-electron",
     "test": "pnpm playwright test",
     "test:debug": "pnpm cross-env DEBUG=pw:*,-pw:test:protocol playwright test",
     "test:e2e": "pnpm playwright test --config tests/e2e/playwright.config.ts",
@@ -41,7 +42,7 @@
     "typecheck": "pnpm tsc -p tsconfig.json --noEmit"
   },
   "engines": {
-    "node": ">=22",
+    "node": ">=22.12",
     "pnpm": ">=9"
   },
   "pnpm": {
@@ -113,7 +114,7 @@
     "cross-env": "10.1.0",
     "del-cli": "7.0.0",
     "discord-api-types": "0.38.40",
-    "electron": "40.6.1",
+    "electron": "45.1.0",
     "electron-builder": "26.8.1",
     "electron-builder-squirrel-windows": "26.8.1",
     "electron-debug": "4.1.0",

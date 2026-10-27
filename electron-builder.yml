@@ -32,12 +32,10 @@ win:
     - target: nsis-web
       arch:
         - x64
-        - ia32
         - arm64
     - target: portable
       arch:
         - x64
-        - ia32
         - arm64
   compression: maximum
 nsisWeb:
@@ -53,7 +51,6 @@ linux:
       arch:
         - x64
         - arm64
-        - armv7l
     - target: flatpak
       arch:
         - x64
@@ -61,7 +58,6 @@ linux:
       arch:
         - x64
         - arm64
-        - armv7l
     - target: rpm
       arch:
         - x64
@@ -73,12 +69,10 @@ linux:
       arch:
         - x64
         - arm64
-        - armv7l
     - target: tar.gz
       arch:
         - x64
         - arm64
-        - armv7l
 appImage:
   description: >-
     YouTube Music Desktop App bundled with custom plugins (and built-in ad
