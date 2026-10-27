@@ -8,6 +8,9 @@ import type { RendererContext } from '@/types/contexts';
 import type { PluginConfig, PluginDef } from '@/types/plugins';
 
 const unregisterStyleMap: Record<string, (() => void)[]> = {};
+// Bumped on every load and unload, so a load that finishes after a later
+// unload (or load) of the same plugin knows it is stale.
+const loadGenerationMap: Record<string, number> = {};
 const loadedPluginMap: Record<
   string,
   PluginDef<unknown, unknown, unknown>
@@ -40,6 +43,7 @@ export const createContext = <Config extends PluginConfig>(
 });
 
 export const forceUnloadRendererPlugin = async (id: string) => {
+  loadGenerationMap[id] = (loadGenerationMap[id] ?? 0) + 1;
   unregisterStyleMap[id]?.forEach((unregister) => unregister());
 
   delete unregisterStyleMap[id];
@@ -52,9 +56,6 @@ export const forceUnloadRendererPlugin = async (id: string) => {
     ctx: 'renderer',
     context: createContext(id),
   });
-  if (plugin?.stylesheets) {
-    document.querySelector(`style#plugin-${id}`)?.remove();
-  }
   if (hasStopped || (hasStopped === null && plugin?.renderer)) {
     console.log(
       LoggerPrefix,
@@ -69,6 +70,8 @@ export const forceUnloadRendererPlugin = async (id: string) => {
 };
 
 export const forceLoadRendererPlugin = async (id: string) => {
+  loadGenerationMap[id] = (loadGenerationMap[id] ?? 0) + 1;
+  const generation = loadGenerationMap[id];
   const plugin = (await rendererPlugins())[id];
   if (!plugin) return;
 
@@ -76,6 +79,8 @@ export const forceLoadRendererPlugin = async (id: string) => {
     ctx: 'renderer',
     context: createContext(id),
   });
+  // Disabled while starting: do not mark it loaded or adopt its stylesheets
+  if (loadGenerationMap[id] !== generation) return;
 
   if (
     hasEvaled ||
@@ -98,6 +103,13 @@ export const forceLoadRendererPlugin = async (id: string) => {
         ...document.adoptedStyleSheets,
         ...styleSheetList,
       ];
+      unregisterStyleMap[id] = [
+        () => {
+          document.adoptedStyleSheets = document.adoptedStyleSheets.filter(
+            (styleSheet) => !styleSheetList.includes(styleSheet),
+          );
+        },
+      ];
     }
 
     console.log(
@@ -118,7 +130,10 @@ export const loadAllRendererPlugins = async () => {
     entries.map(async ([pluginId]) => {
       // Use IPC to get the correctly merged config from the main process
       // (contextBridge serialization can strip properties from getPlugins())
-      const config = await window.ipcRenderer.invoke('ytmd:get-config', pluginId) as PluginConfig;
+      const config = (await window.ipcRenderer.invoke(
+        'ytmd:get-config',
+        pluginId,
+      )) as PluginConfig;
 
       if (config.enabled) {
         await forceLoadRendererPlugin(pluginId);
