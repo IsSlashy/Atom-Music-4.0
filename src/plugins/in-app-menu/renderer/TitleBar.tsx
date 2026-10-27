@@ -26,6 +26,7 @@ import {
 
 import { cacheNoArgs } from '@/providers/decorators';
 import { waitForElement } from '@/utils/wait-for-element';
+import { t } from '@/i18n';
 
 import type { RendererContext } from '@/types/contexts';
 import type { InAppMenuConfig } from '../constants';
@@ -468,6 +469,7 @@ export const TitleBar = (props: TitleBarProps) => {
       ref={(el) => (titleBar = el)}
     >
       <IconButton
+        aria-label={t('plugins.in-app-menu.templates.menu-button')}
         aria-expanded={
           autoCollapsed() ? openTarget() === menuToggle() : undefined
         }

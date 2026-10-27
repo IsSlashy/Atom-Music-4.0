@@ -16,6 +16,20 @@ const loadedPluginMap: Record<
   PluginDef<unknown, unknown, unknown>
 > = {};
 
+// ipcMain listeners each plugin added through ctx.ipc.on. They are removed
+// when the plugin unloads, so enabling it again does not run them twice.
+const pluginIpcListeners: Record<
+  string,
+  [string, (event: Electron.IpcMainEvent, ...args: unknown[]) => void][]
+> = {};
+
+const removePluginIpcListeners = (id: string) => {
+  for (const [event, listener] of pluginIpcListeners[id] ?? []) {
+    ipcMain.removeListener(event, listener);
+  }
+  delete pluginIpcListeners[id];
+};
+
 const createContext = (
   id: string,
   win: BrowserWindow,
@@ -42,10 +56,12 @@ const createContext = (
       ipcMain.handle(event, (_, ...args: unknown[]) => listener(...args));
     },
     on: (event: string, listener: CallableFunction) => {
-      ipcMain.on(event, (_, ...args: unknown[]) => {
+      const wrapped = (_: Electron.IpcMainEvent, ...args: unknown[]) => {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         listener(...args);
-      });
+      };
+      ipcMain.on(event, wrapped);
+      (pluginIpcListeners[id] ??= []).push([event, wrapped]);
     },
     removeHandler: (event: string) => {
       ipcMain.removeHandler(event);
@@ -74,6 +90,7 @@ export const forceUnloadMainPlugin = async (
         plugin.backend)
     ) {
       delete loadedPluginMap[id];
+      removePluginIpcListeners(id);
       console.log(
         LoggerPrefix,
         t('common.console.plugins.unloaded', { pluginName: id }),

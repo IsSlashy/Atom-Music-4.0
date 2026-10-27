@@ -28,8 +28,6 @@ ytmusic-app-layout[is-mweb-modernization-enabled] .ytmd-history-group {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 50%;
-  backdrop-filter: blur(12px) saturate(140%);
-  -webkit-backdrop-filter: blur(12px) saturate(140%);
   -webkit-app-region: no-drag;
   transition: color 200ms cubic-bezier(0.16, 1, 0.3, 1),
               background 200ms cubic-bezier(0.16, 1, 0.3, 1),

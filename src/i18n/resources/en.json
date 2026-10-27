@@ -330,6 +330,7 @@
         "feedback": {
           "conversion-progress": "Conversion: {{percent}}%",
           "converting": "Converting…",
+          "decipher-failed": "Downloads cannot decipher the current YouTube player. The downloader needs an update.",
           "done": "Done: {{filePath}}",
           "download-info": "Downloading {{artist}} - {{title}} [{{videoId}}",
           "download-progress": "Download: {{percent}}%",
@@ -378,7 +379,8 @@
         "can-not-update-progress": "Cannot update progress"
       },
       "templates": {
-        "button": "Download as MP3"
+        "button": "Download as MP3",
+        "button-audio": "Download audio"
       }
     },
     "in-app-menu": {
@@ -386,7 +388,10 @@
       "menu": {
         "hide-dom-window-controls": "Hide DOM window controls"
       },
-      "name": "In-App Menu"
+      "name": "In-App Menu",
+      "templates": {
+        "menu-button": "Menu"
+      }
     },
     "navigation": {
       "description": "Next/Back navigation arrows directly integrated in the interface, like in your favorite browser",

@@ -33,7 +33,12 @@ export const isAlbumOrPlaylist = () => {
       };
     }
   >('tp-yt-paper-listbox #navigation-endpoint')) {
-    if (menuSelector?.data?.addToPlaylistEndpoint?.playlistId) {
+    if (
+      menuSelector?.data?.addToPlaylistEndpoint?.playlistId ||
+      // Logged out, "Save to playlist" is a sign-in prompt without a
+      // playlistId, but the menu still links to the album or playlist
+      menuSelector?.getAttribute('href')?.includes('watch?playlist=')
+    ) {
       return true;
     }
   }

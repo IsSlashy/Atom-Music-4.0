@@ -120,7 +120,7 @@ export interface YoutubePlayer {
   getPlaybackQualityLabel: <Parameters extends unknown[], Return>(
     ...params: Parameters
   ) => Return;
-  setPlaybackQualityRange: (quality: string) => void;
+  setPlaybackQualityRange: (min: string, max?: string) => void;
   onAdUxClicked: <Parameters extends unknown[], Return>(
     ...params: Parameters
   ) => Return;

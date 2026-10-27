@@ -37,9 +37,9 @@ ytmusic-player[player-ui-state_='MINIPLAYER'] #ytmd-video-toggle-switch-button-c
   box-sizing: border-box;
   padding: 0;
   margin-top: 16px;
-  background: rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(30px) saturate(180%);
-  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  /* Near-opaque instead of a backdrop blur: the switch stays visible over the
+     playing video, and a blur there is redrawn on every frame (M12) */
+  background: rgba(3, 3, 3, 0.94);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 200px;
   overflow: hidden;
@@ -139,8 +139,6 @@ ytmusic-player[player-ui-state_='MINIPLAYER'] #ytmd-video-toggle-switch-button-c
   + .video-switch-button-label:before {
   content: '';
   background: rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   height: 100%;
   width: 100%;
   position: absolute;

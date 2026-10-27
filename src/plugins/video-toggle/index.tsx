@@ -228,14 +228,9 @@ export default createPlugin({
         }
       };
 
-      // youtube-player.ts types this with one argument, but YTM takes a
-      // (min, max) range.
+      // YTM takes a (min, max) range
       const setQualityRange = (quality: string) =>
-        (
-          api as unknown as {
-            setPlaybackQualityRange: (min: string, max: string) => void;
-          }
-        ).setPlaybackQualityRange(quality, quality);
+        api.setPlaybackQualityRange(quality, quality);
 
       // Song mode only hides the video, so it caps the stream at 240p instead
       // of letting YTM fetch and decode a stream nobody sees. Not 144p: there

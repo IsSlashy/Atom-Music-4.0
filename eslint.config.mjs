@@ -83,4 +83,10 @@ export default tsEslint.config(
       },
     },
   },
+  {
+    // Vendored page scripts (adblocker injector, cpu-tamer, rm3) are plain
+    // JavaScript outside the TS project: lint them without type information
+    files: ['**/*.js'],
+    ...tsEslint.configs.disableTypeChecked,
+  },
 );

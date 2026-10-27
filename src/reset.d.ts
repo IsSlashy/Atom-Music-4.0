@@ -23,8 +23,22 @@ declare global {
 
   interface Window {
     trustedTypes?: typeof trustedTypes;
-    ipcRenderer: typeof electronIpcRenderer;
-    mainConfig: typeof config;
+    // What src/preload.ts exposes to the page, nothing more
+    ipcRenderer: Pick<
+      typeof electronIpcRenderer,
+      | 'on'
+      | 'off'
+      | 'once'
+      | 'send'
+      | 'removeListener'
+      | 'removeAllListeners'
+      | 'invoke'
+      | 'sendSync'
+    >;
+    mainConfig: {
+      get: typeof config.get;
+      plugins: Pick<typeof config.plugins, 'isEnabled' | 'setOptions'>;
+    };
     electronIs: typeof is;
     ELECTRON_RENDERER_URL: string | undefined;
     /**

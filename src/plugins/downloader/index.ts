@@ -4,7 +4,11 @@ import { styles as style } from './styles';
 
 import { createPlugin } from '@/utils';
 import { onConfigChange, onMainLoad } from './main';
-import { onPlayerApiReady, onRendererLoad } from './renderer';
+import {
+  onConfigChange as onRendererConfigChange,
+  onPlayerApiReady,
+  onRendererLoad,
+} from './renderer';
 import { onMenu } from './menu';
 import { t } from '@/i18n';
 
@@ -54,5 +58,6 @@ export default createPlugin({
   renderer: {
     start: onRendererLoad,
     onPlayerApiReady,
+    onConfigChange: onRendererConfigChange,
   },
 });

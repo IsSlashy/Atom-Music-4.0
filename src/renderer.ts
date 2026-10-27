@@ -746,7 +746,7 @@ function replaceNavIcons() {
       const page = document.createElement('div');
       page.id = id;
       page.style.cssText = `
-        position: fixed; top: 122px; left: 72px; right: 12px; bottom: 72px;
+        position: fixed; top: 122px; left: 56px; right: 12px; bottom: 72px;
         background: rgba(0, 0, 0, 0.35);
         backdrop-filter: blur(30px) saturate(180%);
         -webkit-backdrop-filter: blur(30px) saturate(180%);
@@ -927,8 +927,15 @@ function replaceNavIcons() {
           deleteBtn.addEventListener('mouseleave', () => { deleteBtn.style.background = ''; });
           deleteBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            await window.ipcRenderer.invoke('ytmd:delete-download', file.path);
-            row.remove();
+            // The main process moves the track, its .meta.json and its own
+            // cover to the recycle bin, and says whether that worked
+            const question = `Placer « ${file.name} » dans la corbeille ?`;
+            if (!window.confirm(question)) return;
+            const result = (await window.ipcRenderer.invoke(
+              'ytmd:delete-download',
+              file.path,
+            )) as { success?: boolean } | undefined;
+            if (result?.success) row.remove();
           });
 
           row.appendChild(iconEl);

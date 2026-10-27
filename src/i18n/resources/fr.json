@@ -330,6 +330,7 @@
         "feedback": {
           "conversion-progress": "Conversion : {{percent}} %",
           "converting": "Conversion…",
+          "decipher-failed": "Le téléchargement ne peut pas déchiffrer le lecteur YouTube actuel. Le module de téléchargement doit être mis à jour.",
           "done": "Terminé : {{filePath}}",
           "download-info": "Téléchargement {{artist}} - {{title}} [{{videoId}}",
           "download-progress": "Téléchargé : {{percent}}%",
@@ -378,7 +379,8 @@
         "can-not-update-progress": "Impossible de mettre à jour la progression"
       },
       "templates": {
-        "button": "Télécharger en MP3"
+        "button": "Télécharger en MP3",
+        "button-audio": "Télécharger l'audio"
       }
     },
     "in-app-menu": {
@@ -386,7 +388,10 @@
       "menu": {
         "hide-dom-window-controls": "Masquer les contrôles de la fenêtre DOM"
       },
-      "name": "Menu intégré à l'application"
+      "name": "Menu intégré à l'application",
+      "templates": {
+        "menu-button": "Menu"
+      }
     },
     "navigation": {
       "description": "Flèches de navigation Suivant/Retour directement intégrées dans l'interface, comme dans votre navigateur préféré",

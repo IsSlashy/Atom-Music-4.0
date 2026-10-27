@@ -21,7 +21,6 @@ import enhanceWebRequest, {
 import is from 'electron-is';
 import unhandled from 'electron-unhandled';
 import { autoUpdater } from 'electron-updater';
-import { deepmergeCustom } from 'deepmerge-ts';
 import { deepEqual } from 'fast-equals';
 
 import { allPlugins, mainPlugins } from 'virtual:plugins';
@@ -29,6 +28,7 @@ import { allPlugins, mainPlugins } from 'virtual:plugins';
 import { languageResources } from 'virtual:i18n';
 
 import * as config from '@/config';
+import { mergePluginConfig } from '@/config/plugins';
 
 import { refreshMenu, setApplicationMenu } from '@/menu';
 import { fileExists, injectCSS, injectCSSAsFile } from '@/plugins/utils/main';
@@ -57,11 +57,6 @@ import { loadI18n, setLanguage, t } from '@/i18n';
 import ErrorHtmlAsset from '@assets/error.html?asset';
 
 import type { PluginConfig } from '@/types/plugins';
-
-// Arrays in a stored config replace the defaults instead of being appended to them
-const deepmerge = deepmergeCustom({
-  mergeArrays: false,
-});
 
 // Catch errors and log them
 unhandled({
@@ -657,6 +652,19 @@ ipcMain.handle('ytmd:delete-download', async (event, filePath: unknown) => {
   return { success: true };
 });
 
+const writesDownloadFolder = (id: string, value: unknown) => {
+  if (id !== 'downloader' || typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const { downloadOnFinish } = value as { downloadOnFinish?: unknown };
+  return (
+    'downloadFolder' in value ||
+    (typeof downloadOnFinish === 'object' &&
+      downloadOnFinish !== null &&
+      'folder' in downloadOnFinish)
+  );
+};
+
 let hooksInstalled = false;
 
 const initHook = async (_win: BrowserWindow) => {
@@ -672,12 +680,18 @@ const initHook = async (_win: BrowserWindow) => {
   ipcMain.handle('ytmd:get-config', (_, id: string) => {
     const stored = config.get(`plugins.${id}`);
     const def = allPluginStubs[id]?.config ?? { enabled: false };
-    const merged = deepmerge(def, stored ?? {}) as PluginConfig;
+    const merged = mergePluginConfig(def, stored ?? {}) as PluginConfig;
     return merged;
   });
   ipcMain.handle('ytmd:set-config', (event, name: string, obj: object) => {
     // Plugin settings decide what gets enabled and where downloads are written
     if (!isTrustedSender(event)) return;
+    if (!Object.hasOwn(allPluginStubs, name)) return;
+    // The download folders are what ytmd-local serves from. The menu sets them
+    // through the native folder picker, in this process, never over IPC.
+    if (writesDownloadFolder(name, obj)) {
+      throw new Error('The download folders are not writable from the page');
+    }
     config.setPartial(`plugins.${name}`, obj, allPluginStubs[name].config);
   });
 
@@ -716,11 +730,11 @@ const initHook = async (_win: BrowserWindow) => {
         // merged default used to look like an enable event, which reloaded the
         // plugin and popped the "restart required" dialog on every track change.
         const defaults = allPluginStubs[id].config ?? { enabled: false };
-        const oldConfig = deepmerge(
+        const oldConfig = mergePluginConfig(
           defaults,
           oldPluginConfigList[id] ?? {},
         ) as PluginConfig;
-        const config = deepmerge(
+        const config = mergePluginConfig(
           defaults,
           newPluginConfig ?? {},
         ) as PluginConfig;
@@ -947,13 +961,25 @@ async function createMainWindow() {
     : config.defaultConfig.url;
   win.on('closed', onClosed);
 
+  // Detached picture-in-picture moves and resizes this window, and the plugin
+  // keeps that geometry in its own pip-position and pip-size. Checked when the
+  // save runs, since the plugin writes isInPiP asynchronously. A loaded plugin
+  // resets a stale isInPiP at start, so a disabled one cannot block the saves.
+  const saveWindowGeometry = (key: string, value: unknown) => {
+    const inDetachedPiP =
+      Boolean(getAllLoadedMainPlugins()['picture-in-picture']) &&
+      config.plugins.getOptions<{ isInPiP?: boolean }>('picture-in-picture')
+        ?.isInPiP === true;
+    if (!inDetachedPiP) config.set(key, value);
+  };
+
   win.on('move', () => {
     if (win.isMaximized() || win.isFullScreen()) {
       return;
     }
 
     const [x, y] = win.getPosition();
-    lateSaveDeferred('window-position', { x, y });
+    lateSaveDeferred('window-position', { x, y }, saveWindowGeometry);
   });
 
   let winWasMaximized: boolean;
@@ -971,10 +997,7 @@ async function createMainWindow() {
       return;
     }
 
-    lateSaveDeferred('window-size', {
-      width,
-      height,
-    });
+    lateSaveDeferred('window-size', { width, height }, saveWindowGeometry);
   });
 
   const savedTimeouts: Record<string, NodeJS.Timeout | undefined> = {};

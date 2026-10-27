@@ -21,6 +21,17 @@ let download: () => void;
 
 const [downloadButtonText, setDownloadButtonText] = createSignal<string>('');
 
+// The label names MP3 only for the preset that writes one (the default).
+// Source and Custom keep the codec or follow the user's arguments.
+const mp3Preset = 'mp3 (256kbps)';
+let selectedPreset = mp3Preset;
+const buttonLabel = () =>
+  selectedPreset === mp3Preset
+    ? t('plugins.downloader.templates.button')
+    : t('plugins.downloader.templates.button-audio');
+// Progress feedback replaces the label until the downloader clears it
+let showingFeedback = false;
+
 let buttonContainer: HTMLDivElement | null = null;
 
 type MenuEndpoint = HTMLElement & {
@@ -61,7 +72,15 @@ const menuObserver = new MutationObserver(() => {
 
 export const onRendererLoad = ({
   ipc,
+  getConfig,
 }: RendererContext<DownloaderPluginConfig>) => {
+  Promise.resolve(getConfig())
+    .then((config) => {
+      selectedPreset = config.selectedPreset;
+      if (!showingFeedback) setDownloadButtonText(buttonLabel());
+    })
+    .catch(console.error);
+
   download = () => {
     const songMenu = getSongMenu();
     const hrefs = [
@@ -99,13 +118,19 @@ export const onRendererLoad = ({
   };
 
   ipc.on('downloader-feedback', (feedback: string) => {
-    const targetHtml = feedback || t('plugins.downloader.templates.button');
+    showingFeedback = Boolean(feedback);
+    const targetHtml = feedback || buttonLabel();
     setDownloadButtonText(targetHtml);
   });
 };
 
+export const onConfigChange = (config: DownloaderPluginConfig) => {
+  selectedPreset = config.selectedPreset;
+  if (!showingFeedback) setDownloadButtonText(buttonLabel());
+};
+
 export const onPlayerApiReady = () => {
-  setDownloadButtonText(t('plugins.downloader.templates.button'));
+  setDownloadButtonText(buttonLabel());
 
   buttonContainer = document.createElement('div');
   buttonContainer.classList.add(

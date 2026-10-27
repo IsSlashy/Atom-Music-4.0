@@ -6,7 +6,7 @@ import { createPlugin } from '@/utils';
 
 import promptOptions from '@/providers/prompt-options';
 import { overrideListener } from './override';
-import { onConfigChange, onPlayerApiReady } from './renderer';
+import { onConfigChange, onPlayerApiReady, stop } from './renderer';
 import { t } from '@/i18n';
 
 export type PreciseVolumePluginConfig = {
@@ -190,5 +190,6 @@ export default createPlugin({
     },
     onPlayerApiReady,
     onConfigChange,
+    stop,
   },
 });

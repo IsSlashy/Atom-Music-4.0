@@ -147,14 +147,27 @@ export const SettingsSection = (props: SettingsSectionProps) => {
   };
 
   const updateConfig = async (key: string, value: unknown) => {
-    await window.ipcRenderer.invoke('ytmd:set-config', props.plugin.id, {
-      [key]: value,
-    });
+    try {
+      await window.ipcRenderer.invoke('ytmd:set-config', props.plugin.id, {
+        [key]: value,
+      });
+    } catch (error) {
+      console.error(`Could not save ${props.plugin.id}.${key}:`, error);
+      return;
+    }
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
 
+  // The download folders are set through the menu's folder picker only: the
+  // bridge and the main process refuse them from the page.
+  const menuOnlyKeys: Record<string, string[]> = {
+    downloader: ['downloadFolder', 'downloadOnFinish'],
+  };
+
   const configKeys = () =>
-    Object.keys(props.plugin.defaultConfig).filter((k) => k !== 'enabled');
+    Object.keys(props.plugin.defaultConfig).filter(
+      (k) => k !== 'enabled' && !menuOnlyKeys[props.plugin.id]?.includes(k),
+    );
 
   const hasConfig = () => configKeys().length > 0;
 
