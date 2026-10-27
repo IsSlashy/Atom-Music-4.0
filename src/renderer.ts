@@ -1,7 +1,12 @@
 import i18next from 'i18next';
 
 import { startingPages } from './providers/extracted-data';
-import { setupSongInfo } from './providers/song-info-front';
+import {
+  isFullscreen,
+  isShuffleOn,
+  setupSongInfo,
+} from './providers/song-info-front';
+import { queryControl } from './providers/ytm-selectors';
 import {
   createContext,
   forceLoadRendererPlugin,
@@ -12,12 +17,14 @@ import {
 } from './loader/renderer';
 
 import { loadI18n, setLanguage, t as i18t } from '@/i18n';
+import { colors, typography } from '@/theme/tokens';
 
 import {
   defaultTrustedTypePolicy,
   registerWindowDefaultTrustedTypePolicy,
 } from '@/utils/trusted-types';
 
+import type { GetState, RepeatMode } from '@/types/datahost-get-state';
 import type { PluginConfig, PluginDef } from '@/types/plugins';
 import type { YoutubePlayer } from '@/types/youtube-player';
 import type { QueueElement } from '@/types/queue';
@@ -131,18 +138,267 @@ const modernIcons: Record<string, { outline: string; filled: string }> = {
   },
 };
 
-// ===== SHARED LOCAL PLAYBACK FUNCTION =====
-const playLocalFile = async (file: {
-  name: string;
-  path: string;
-  imageSrc?: string;
-}) => {
-  // Cleanup any previous local playback session
-  const prevCleanup = (window as any).__ytmdLocalCleanup;
-  if (prevCleanup) prevCleanup();
+// ===== LOCAL PLAYER =====
+// A downloaded file plays in an <audio> element of its own, under a bar of its
+// own laid over YTM's player bar (classic or new), while YTM's video is held
+// paused on a silent source.
+
+type LocalFile = { name: string; path: string; imageSrc?: string };
+type LibraryFile = LocalFile & { size: number; modified: number };
+
+const listDownloads = async () =>
+  (await window.ipcRenderer.invoke('ytmd:list-downloads')) as
+    | { folder: string; files: LibraryFile[] }
+    | undefined;
+
+const getCover = async (filePath: string) => {
+  try {
+    const result = (await window.ipcRenderer.invoke(
+      'ytmd:get-cover',
+      filePath,
+    )) as { imageSrc: string | null } | undefined;
+    return result?.imageSrc ?? null;
+  } catch {
+    return null;
+  }
+};
+
+// "Artist - Title.mp3" gives the artist and the title
+const parseFileName = (name: string) => {
+  const cleanName = name.replace(/\.[^.]+$/, '');
+  const parts = cleanName.split(' - ');
+  return parts.length > 1
+    ? { title: parts.slice(1).join(' - '), artist: parts[0] }
+    : { title: cleanName, artist: '' };
+};
+
+const formatTime = (s: number) => {
+  if (!isFinite(s)) return '0:00';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return m + ':' + (sec < 10 ? '0' : '') + sec;
+};
+
+type LocalPlayback = {
+  play: () => void;
+  pause: () => void;
+  togglePlay: () => void;
+  next: () => void;
+  previous: () => void;
+  seekTo: (seconds: number) => void;
+  seekBy: (seconds: number) => void;
+  /** From 0 to 100, like YTM's volume. */
+  setVolume: (volume: number) => void;
+  toggleMute: () => void;
+  switchRepeat: () => void;
+  getRepeatMode: () => RepeatMode;
+};
+
+/**
+ * The local playback in progress, or null. While it is set, the playback IPC
+ * handlers in onApiLoaded() (tray, shortcuts, protocol, MPRIS) and the media
+ * session (Windows SMTC, media keys) drive it instead of YTM's player.
+ */
+let localPlayback: LocalPlayback | null = null;
+
+// YTM writes the media session (SMTC, media keys) on every track and play
+// state change. While local playback runs, those writes are kept here instead
+// of applied, and they are applied again when it stops.
+const mediaSession = navigator.mediaSession;
+const applyActionHandler = mediaSession.setActionHandler.bind(mediaSession);
+const applyPositionState = mediaSession.setPositionState.bind(mediaSession);
+const metadataAccessor = Object.getOwnPropertyDescriptor(
+  MediaSession.prototype,
+  'metadata',
+);
+const playbackStateAccessor = Object.getOwnPropertyDescriptor(
+  MediaSession.prototype,
+  'playbackState',
+);
+const pageMediaSession: {
+  handlers: Map<MediaSessionAction, MediaSessionActionHandler | null>;
+  metadata: MediaMetadata | null;
+  playbackState: MediaSessionPlaybackState;
+  position?: MediaPositionState;
+} = { handlers: new Map(), metadata: null, playbackState: 'none' };
+
+const getMetadata = () =>
+  (metadataAccessor?.get?.call(mediaSession) ?? null) as MediaMetadata | null;
+const applyMetadata = (metadata: MediaMetadata | null) =>
+  metadataAccessor?.set?.call(mediaSession, metadata);
+const getPlaybackState = () =>
+  (playbackStateAccessor?.get?.call(mediaSession) ??
+    'none') as MediaSessionPlaybackState;
+const applyPlaybackState = (state: MediaSessionPlaybackState) =>
+  playbackStateAccessor?.set?.call(mediaSession, state);
+
+mediaSession.setActionHandler = (action, handler) => {
+  pageMediaSession.handlers.set(action, handler);
+  if (!localPlayback) applyActionHandler(action, handler);
+};
+mediaSession.setPositionState = (state) => {
+  pageMediaSession.position = state;
+  if (!localPlayback) applyPositionState(state);
+};
+Object.defineProperties(mediaSession, {
+  metadata: {
+    configurable: true,
+    get: getMetadata,
+    set(metadata: MediaMetadata | null) {
+      pageMediaSession.metadata = metadata;
+      if (!localPlayback) applyMetadata(metadata);
+    },
+  },
+  playbackState: {
+    configurable: true,
+    get: getPlaybackState,
+    set(state: MediaSessionPlaybackState) {
+      pageMediaSession.playbackState = state;
+      if (!localPlayback) applyPlaybackState(state);
+    },
+  },
+});
+
+const localMediaActions: MediaSessionAction[] = [
+  'play',
+  'pause',
+  'previoustrack',
+  'nexttrack',
+  'seekto',
+  'seekbackward',
+  'seekforward',
+];
+
+const restorePageMediaSession = () => {
+  for (const action of localMediaActions) {
+    try {
+      applyActionHandler(action, pageMediaSession.handlers.get(action) ?? null);
+    } catch {
+      // Action not supported
+    }
+  }
+  applyMetadata(pageMediaSession.metadata);
+  applyPlaybackState(pageMediaSession.playbackState);
+  try {
+    // No argument clears it, and the position comes from the media again
+    applyPositionState(pageMediaSession.position);
+  } catch {
+    applyPositionState();
+  }
+};
+
+const localIcons = {
+  play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
+  pause:
+    '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>',
+  previous:
+    '<svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>',
+  next: '<svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>',
+  repeat:
+    '<svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>',
+  repeatOne:
+    '<svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z"/></svg>',
+  volume:
+    '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>',
+  muted:
+    '<svg viewBox="0 0 24 24"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z"/></svg>',
+};
+
+const repeatLabels: Record<RepeatMode, string> = {
+  NONE: 'Répétition désactivée',
+  ALL: 'Tout répéter',
+  ONE: 'Répéter le titre',
+};
+const nextRepeatMode: Record<RepeatMode, RepeatMode> = {
+  NONE: 'ALL',
+  ALL: 'ONE',
+  ONE: 'NONE',
+};
+
+// Above YTM's bars (z-index 5), below its menus and dialogs. Opaque, since
+// YTM's bar stays under it.
+const localBarStyle = `
+#ytmd-local-bar {
+  position: fixed; z-index: 10; box-sizing: border-box;
+  display: flex; align-items: center; gap: 12px; padding: 0 16px;
+  background: ${colors.black3}; border-top: 1px solid rgba(255, 255, 255, 0.08);
+  color: ${colors.textPrimary}; font-family: ${typography.fontFamily};
+  color-scheme: dark;
+}
+#ytmd-local-bar button {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 36px; height: 36px; padding: 0; border-radius: 50%; cursor: pointer;
+  border: 1px solid ${colors.sidebarItemHover}; background: rgba(255, 255, 255, 0.04);
+  color: ${colors.textSecondary};
+}
+#ytmd-local-bar button:hover { background: ${colors.sidebarItemActive}; color: ${colors.white}; }
+#ytmd-local-bar button svg { width: 22px; height: 22px; fill: currentColor; }
+#ytmd-local-bar [data-role="play-pause"] {
+  width: 44px; height: 44px; background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.12); color: ${colors.white};
+}
+#ytmd-local-bar [data-role="play-pause"] svg { width: 28px; height: 28px; }
+#ytmd-local-bar [data-role="repeat"], #ytmd-local-bar [data-role="mute"] {
+  border-color: transparent; background: transparent;
+}
+#ytmd-local-bar [data-role="repeat"][aria-pressed="true"] { color: ${colors.accent}; }
+#ytmd-local-bar [data-role="progress"] {
+  position: absolute; left: 0; top: -8px; width: 100%; height: 16px; margin: 0;
+  accent-color: #f00; cursor: pointer;
+}
+#ytmd-local-bar [data-role="time"] {
+  font-size: 12px; color: ${colors.textSecondary}; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+#ytmd-local-bar [data-role="info"] { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; }
+#ytmd-local-bar [data-role="cover"] {
+  width: 40px; height: 40px; border-radius: 4px; object-fit: cover; flex-shrink: 0; background: #333;
+}
+#ytmd-local-bar [data-role="text"] { min-width: 0; }
+#ytmd-local-bar [data-role="title"], #ytmd-local-bar [data-role="artist"] {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#ytmd-local-bar [data-role="title"] { font-size: 14px; font-weight: 600; color: ${colors.white}; }
+#ytmd-local-bar [data-role="artist"] { font-size: 12px; color: ${colors.textSecondary}; }
+#ytmd-local-bar [data-role="volume"] { width: 96px; margin: 0; accent-color: ${colors.white}; cursor: pointer; }
+@media (max-width: 615px) {
+  #ytmd-local-bar [data-role="time"], #ytmd-local-bar [data-role="repeat"],
+  #ytmd-local-bar [data-role="volume"] { display: none; }
+}
+`;
+
+const createLocalButton = (role: string, label: string, icon: string) => {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.dataset.role = role;
+  button.innerHTML = icon;
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  return button;
+};
+
+const playLocalFile = (file: LocalFile) => {
+  // Moving to another file from the local player keeps its repeat mode and
+  // volume. A first file takes YTM's.
+  const previousPlayback = localPlayback;
+  window.__ytmdLocalCleanup?.();
+  // What YTM shows in the media session, applied again on cleanup
+  pageMediaSession.metadata = getMetadata();
+  pageMediaSession.playbackState = getPlaybackState();
 
   // Block YTM's video player to prevent auto-play/radio
   const ytVideo = document.querySelector('video');
+  const stopForYtm = () => {
+    window.__ytmdLocalCleanup?.();
+  };
+  // Kept to tell this playback's overrides from those of the next one
+  let blockedPlay: (() => Promise<void>) | null = null;
+  let srcOverride: ((val: string) => void) | null = null;
+  // YTM does not always go through the overrides below to start a track: the
+  // video playing anything but our silent source ends local playback too
+  const onYtmPlay = () => {
+    if (ytVideo && !ytVideo.currentSrc.startsWith('data:')) stopForYtm();
+  };
   if (ytVideo) {
     ytVideo.pause();
     // Load silent audio so YTM thinks video is ready (fixes loading spinner)
@@ -150,58 +406,44 @@ const playLocalFile = async (file: {
       'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
     ytVideo.muted = true;
     ytVideo.load();
-    // Override play() - but allow cleanup when YTM sets a new real src
-    const origPlay = ytVideo.play.bind(ytVideo);
+    // Override play() - but allow cleanup when YTM sets a new real src. The
+    // prototype's, since a previous file's override may still be in place.
+    const origPlay = HTMLMediaElement.prototype.play.bind(ytVideo);
     let localBlocked = true;
-    (ytVideo as any).play = function () {
+    blockedPlay = () => {
       // If YTM loaded a new real source (not our silent data URI), restore and let it play
       if (localBlocked && ytVideo.src && !ytVideo.src.startsWith('data:')) {
         localBlocked = false;
-        (ytVideo as any).play = origPlay;
-        const cl = (window as any).__ytmdLocalCleanup;
-        if (cl) cl();
-        const la = document.getElementById(
-          'ytmd-local-audio',
-        ) as HTMLAudioElement | null;
-        if (la) {
-          la.pause();
-          la.src = '';
-        }
+        Reflect.deleteProperty(ytVideo, 'play'); // restore the prototype's
+        stopForYtm();
         return origPlay();
       }
       return Promise.resolve();
     };
+    ytVideo.play = blockedPlay;
     // Also watch for src changes via setter override
-    const origSrcDescriptor =
-      Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src') ||
-      Object.getOwnPropertyDescriptor(HTMLVideoElement.prototype, 'src');
-    if (origSrcDescriptor?.set) {
-      const origSrcSet = origSrcDescriptor.set;
+    const srcAccessor = Object.getOwnPropertyDescriptor(
+      HTMLMediaElement.prototype,
+      'src',
+    );
+    if (srcAccessor?.get && srcAccessor.set) {
+      srcOverride = (val: string) => {
+        srcAccessor.set!.call(ytVideo, val);
+        // If YTM sets a real source, restore everything
+        if (localBlocked && val && !val.startsWith('data:')) {
+          localBlocked = false;
+          Reflect.deleteProperty(ytVideo, 'play');
+          Reflect.deleteProperty(ytVideo, 'src');
+          stopForYtm();
+        }
+      };
       Object.defineProperty(ytVideo, 'src', {
-        get: origSrcDescriptor.get
-          ? origSrcDescriptor.get.bind(ytVideo)
-          : () => ytVideo.getAttribute('src') || '',
-        set(val: string) {
-          origSrcSet.call(ytVideo, val);
-          // If YTM sets a real source, restore everything
-          if (localBlocked && val && !val.startsWith('data:')) {
-            localBlocked = false;
-            (ytVideo as any).play = origPlay;
-            delete (ytVideo as any).src; // remove override, restore prototype
-            const cl = (window as any).__ytmdLocalCleanup;
-            if (cl) cl();
-            const la = document.getElementById(
-              'ytmd-local-audio',
-            ) as HTMLAudioElement | null;
-            if (la) {
-              la.pause();
-              la.src = '';
-            }
-          }
-        },
+        get: () => srcAccessor.get!.call(ytVideo) as string,
+        set: srcOverride,
         configurable: true,
       });
     }
+    ytVideo.addEventListener('play', onYtmPlay);
   }
 
   // Create or reuse hidden audio element
@@ -214,149 +456,168 @@ const playLocalFile = async (file: {
     localAudio.style.display = 'none';
     document.body.appendChild(localAudio);
   }
-  localAudio.src = 'ytmd-local://file?path=' + encodeURIComponent(file.path);
+  const audio = localAudio;
+  audio.src = 'ytmd-local://file?path=' + encodeURIComponent(file.path);
+  if (!previousPlayback) {
+    audio.volume = Math.max(0, Math.min(1, (api?.getVolume() ?? 100) / 100));
+    audio.muted = api?.isMuted() ?? false;
+  }
+  audio.play().catch((err) => console.error('[YTMusic] Playback error:', err));
 
-  // Sync volume from YTM's player bar
-  const playerBar = document.querySelector<any>('ytmusic-player-bar');
-  const ytmVolume =
-    playerBar?.playerApi?.getVolume?.() ?? api?.getVolume?.() ?? 100;
-  localAudio.volume = Math.max(0, Math.min(1, ytmVolume / 100));
+  let repeatMode: RepeatMode =
+    previousPlayback?.getRepeatMode() ??
+    document
+      .querySelector<HTMLElement & { getState?: () => GetState }>('ytmusic-app')
+      ?.getState?.()?.queue?.repeatMode ??
+    'NONE';
 
-  // Watch for volume slider changes
-  const volumeSlider = document.querySelector<HTMLElement>(
-    '#volume-slider, #expand-volume-slider',
-  );
-  const onVolumeChange = () => {
-    const vol =
-      playerBar?.playerApi?.getVolume?.() ?? api?.getVolume?.() ?? 100;
-    if (localAudio) localAudio.volume = Math.max(0, Math.min(1, vol / 100));
-  };
-  if (volumeSlider)
-    volumeSlider.addEventListener('value-change', onVolumeChange);
-
-  // Also listen for IPC volume updates
-  const onIpcVolume = (_: any, vol: number) => {
-    if (localAudio) localAudio.volume = Math.max(0, Math.min(1, vol / 100));
-  };
-  window.ipcRenderer.on('ytmd:update-volume', onIpcVolume);
-
-  localAudio
-    .play()
-    .catch((err) => console.error('[YTMusic] Playback error:', err));
-
-  // Fetch cover art if not already available
+  const { title: songTitle, artist: songArtist } = parseFileName(file.name);
   let coverSrc = file.imageSrc;
-  if (!coverSrc) {
-    try {
-      const coverResult = (await window.ipcRenderer.invoke(
-        'ytmd:get-cover',
-        file.path,
-      )) as { imageSrc: string | null };
-      if (coverResult?.imageSrc) coverSrc = coverResult.imageSrc;
-    } catch {
-      /* ignore */
-    }
+  let localActive = true;
+
+  // ---- LOCAL BAR, over whichever player bar YTM shows ----
+  if (!document.getElementById('ytmd-local-bar-style')) {
+    const style = document.createElement('style');
+    style.id = 'ytmd-local-bar-style';
+    style.textContent = localBarStyle;
+    document.head.appendChild(style);
   }
+  const bar = document.createElement('div');
+  bar.id = 'ytmd-local-bar';
+  bar.setAttribute('role', 'region');
+  bar.setAttribute('aria-label', 'Lecteur local');
 
-  // Extract title/artist from filename
-  const cleanName = file.name.replace(/\.[^.]+$/, '');
-  const fileParts = cleanName.split(' - ');
-  const songTitle =
-    fileParts.length > 1 ? fileParts.slice(1).join(' - ') : cleanName;
-  const songArtist = fileParts.length > 1 ? fileParts[0] : '';
+  const progress = document.createElement('input');
+  progress.type = 'range';
+  progress.dataset.role = 'progress';
+  progress.min = '0';
+  progress.max = '0';
+  progress.step = 'any';
+  progress.value = '0';
+  progress.setAttribute('aria-label', 'Position dans le titre');
 
-  const formatTime = (s: number) => {
-    if (!isFinite(s)) return '0:00';
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return m + ':' + (sec < 10 ? '0' : '') + sec;
-  };
+  const previousButton = createLocalButton(
+    'previous',
+    'Précédent',
+    localIcons.previous,
+  );
+  const playPauseButton = createLocalButton(
+    'play-pause',
+    'Pause',
+    localIcons.pause,
+  );
+  const nextButton = createLocalButton('next', 'Suivant', localIcons.next);
 
-  // Elements
-  const titleEl = document.querySelector(
-    'yt-formatted-string.title.style-scope.ytmusic-player-bar',
-  );
-  const subtitleEl = document.querySelector(
-    'ytmusic-player-bar .content-info-wrapper .subtitle',
-  );
-  const thumbImg = document.querySelector<HTMLImageElement>(
-    'ytmusic-player-bar img.image.style-scope.ytmusic-player-bar',
-  );
-  const origTimeInfo = document.querySelector<HTMLElement>(
-    'span.time-info.style-scope.ytmusic-player-bar',
-  );
-  const progressBar = document.querySelector<HTMLElement>('#progress-bar');
-  const playPauseBtn = document.querySelector<HTMLElement>(
-    'ytmusic-player-bar #play-pause-button',
-  );
+  const time = document.createElement('span');
+  time.dataset.role = 'time';
+  time.textContent = '0:00 / 0:00';
 
-  // ---- TITLE / ARTIST: use MutationObserver with guard flag ----
-  let guardFlag = false;
-  const forceUI = () => {
-    if (guardFlag) return;
-    guardFlag = true;
-    if (titleEl && titleEl.textContent !== songTitle)
-      titleEl.textContent = songTitle;
-    if (subtitleEl && subtitleEl.textContent !== songArtist)
-      subtitleEl.textContent = songArtist;
-    guardFlag = false;
-  };
-  forceUI();
-  const uiObserver = new MutationObserver(() => forceUI());
-  if (titleEl)
-    uiObserver.observe(titleEl, {
-      childList: true,
-      characterData: true,
-      subtree: true,
-    });
-  if (subtitleEl)
-    uiObserver.observe(subtitleEl, {
-      childList: true,
-      characterData: true,
-      subtree: true,
-    });
+  const info = document.createElement('div');
+  info.dataset.role = 'info';
+  const cover = document.createElement('img');
+  cover.dataset.role = 'cover';
+  cover.alt = '';
+  const text = document.createElement('div');
+  text.dataset.role = 'text';
+  const titleLine = document.createElement('div');
+  titleLine.dataset.role = 'title';
+  titleLine.textContent = songTitle;
+  titleLine.title = songTitle;
+  const artistLine = document.createElement('div');
+  artistLine.dataset.role = 'artist';
+  artistLine.textContent = songArtist;
+  text.append(titleLine, artistLine);
+  info.append(cover, text);
 
-  // ---- IMAGE: overlay our own image on top of the thumbnail container ----
-  const thumbContainer =
-    document.querySelector<HTMLElement>(
-      'ytmusic-player-bar .thumbnail-image-wrapper',
-    ) ||
-    document.querySelector<HTMLElement>(
-      'ytmusic-player-bar .player-bar-image',
-    ) ||
-    thumbImg?.parentElement;
-  let customThumb = document.getElementById(
-    'ytmd-local-thumb',
-  ) as HTMLImageElement | null;
-  if (coverSrc && thumbContainer) {
-    if (!customThumb) {
-      customThumb = document.createElement('img');
-      customThumb.id = 'ytmd-local-thumb';
-      customThumb.style.cssText =
-        'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:10;border-radius:inherit;';
-      thumbContainer.style.position = 'relative';
-      thumbContainer.appendChild(customThumb);
+  const repeatButton = createLocalButton(
+    'repeat',
+    repeatLabels[repeatMode],
+    localIcons.repeat,
+  );
+  const muteButton = createLocalButton('mute', 'Couper le son', '');
+  const volume = document.createElement('input');
+  volume.type = 'range';
+  volume.dataset.role = 'volume';
+  volume.min = '0';
+  volume.max = '100';
+  volume.step = '1';
+  volume.setAttribute('aria-label', 'Volume');
+
+  bar.append(
+    progress,
+    previousButton,
+    playPauseButton,
+    nextButton,
+    time,
+    info,
+    repeatButton,
+    muteButton,
+    volume,
+  );
+  document.body.appendChild(bar);
+
+  // YTM's bar stays under ours: keep focus and clicks off it
+  const ytmBar = queryControl('playerBar');
+  const ytmBarWasInert = ytmBar?.inert ?? false;
+  if (ytmBar) ytmBar.inert = true;
+
+  const placeBar = () => {
+    const rect = queryControl('playerBar')?.getBoundingClientRect();
+    if (rect && rect.height > 0) {
+      bar.style.left = `${rect.left}px`;
+      bar.style.top = `${rect.top}px`;
+      bar.style.width = `${rect.width}px`;
+      bar.style.height = `${rect.height}px`;
+    } else {
+      bar.style.left = '0px';
+      bar.style.top = `${window.innerHeight - 72}px`;
+      bar.style.width = '100%';
+      bar.style.height = '72px';
     }
-    customThumb.src = coverSrc;
-    customThumb.style.display = '';
-  }
+  };
+  placeBar();
+  const barResizeObserver = new ResizeObserver(placeBar);
+  if (ytmBar) barResizeObserver.observe(ytmBar);
+  window.addEventListener('resize', placeBar);
 
   // ---- MAIN PLAYER IMAGE: inject cover art into ytmusic-player ----
   const ytPlayer = document.querySelector<HTMLElement>('ytmusic-player');
   let mainCover = document.getElementById(
     'ytmd-local-main-cover',
   ) as HTMLImageElement | null;
-  if (coverSrc && ytPlayer) {
-    if (!mainCover) {
-      mainCover = document.createElement('img');
-      mainCover.id = 'ytmd-local-main-cover';
-      mainCover.style.cssText =
-        'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;z-index:20;background:#000;pointer-events:none;';
-      ytPlayer.style.position = 'relative';
-      ytPlayer.appendChild(mainCover);
+  if (ytPlayer && !mainCover) {
+    mainCover = document.createElement('img');
+    mainCover.id = 'ytmd-local-main-cover';
+    mainCover.style.cssText =
+      'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;z-index:20;background:#000;pointer-events:none;';
+    ytPlayer.style.position = 'relative';
+    ytPlayer.appendChild(mainCover);
+  }
+
+  const showCover = () => {
+    cover.hidden = !coverSrc;
+    if (coverSrc) cover.src = coverSrc;
+    if (mainCover) {
+      mainCover.style.display = coverSrc ? '' : 'none';
+      if (coverSrc) mainCover.src = coverSrc;
     }
-    mainCover.src = coverSrc;
-    mainCover.style.display = '';
+    // The media session refuses ytmd-local images, and the page cannot read
+    // them to make a blob of them: SMTC then shows no picture
+    const artwork =
+      coverSrc && /^(https?|data|blob):/.test(coverSrc)
+        ? [{ src: coverSrc }]
+        : [];
+    applyMetadata(
+      new MediaMetadata({ title: songTitle, artist: songArtist, artwork }),
+    );
+  };
+  // Fetch cover art if not already available
+  if (!coverSrc) {
+    getCover(file.path).then((src) => {
+      if (!localActive || !src) return;
+      coverSrc = src;
+      showCover();
+    });
   }
 
   // ---- SIDE PANEL: replace queue with local downloads list ----
@@ -403,9 +664,9 @@ const playLocalFile = async (file: {
       return img;
     };
     // Fetch downloads list
-    window.ipcRenderer.invoke('ytmd:list-downloads').then((res: any) => {
-      const dlFiles = res?.files || [];
-      dlFiles.forEach((f: any) => {
+    listDownloads().then((res) => {
+      const dlFiles = res?.files ?? [];
+      dlFiles.forEach((f) => {
         const item = document.createElement('div');
         const isPlaying = f.path === file.path;
         item.style.cssText = `display:flex;align-items:center;padding:8px 12px;border-radius:8px;cursor:pointer;gap:10px;${isPlaying ? 'background:rgba(255,255,255,0.12);' : ''}`;
@@ -421,293 +682,297 @@ const playLocalFile = async (file: {
           'width:40px;height:40px;border-radius:4px;background:#333;flex-shrink:0;overflow:hidden;';
         if (f.imageSrc) {
           thumb.appendChild(createCover(String(f.imageSrc)));
+        } else {
+          getCover(f.path).then((src) => {
+            if (src) thumb.appendChild(createCover(src));
+          });
         }
         item.appendChild(thumb);
         // Title/artist
-        const info = document.createElement('div');
-        info.style.cssText = 'flex:1;min-width:0;';
-        const cn = f.name.replace(/\.[^.]+$/, '');
-        const parts = cn.split(' - ');
-        const t = parts.length > 1 ? parts.slice(1).join(' - ') : cn;
-        const a = parts.length > 1 ? parts[0] : '';
-        const titleLine = document.createElement('div');
-        titleLine.style.cssText = `color:${isPlaying ? '#fff' : 'rgba(255,255,255,0.9)'};font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
-        titleLine.textContent = String(t);
-        const artistLine = document.createElement('div');
-        artistLine.style.cssText =
+        const itemInfo = document.createElement('div');
+        itemInfo.style.cssText = 'flex:1;min-width:0;';
+        const { title: t, artist: a } = parseFileName(f.name);
+        const itemTitle = document.createElement('div');
+        itemTitle.style.cssText = `color:${isPlaying ? '#fff' : 'rgba(255,255,255,0.9)'};font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+        itemTitle.textContent = t;
+        const itemArtist = document.createElement('div');
+        itemArtist.style.cssText =
           'color:rgba(255,255,255,0.5);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-        artistLine.textContent = String(a);
-        info.append(titleLine, artistLine);
-        item.appendChild(info);
+        itemArtist.textContent = a;
+        itemInfo.append(itemTitle, itemArtist);
+        item.appendChild(itemInfo);
         // Now playing indicator
         if (isPlaying) {
           const indicator = document.createElement('div');
           indicator.style.cssText = 'color:#f00;font-size:18px;flex-shrink:0;';
-          indicator.textContent = '\u266B';
+          indicator.textContent = '♫';
           item.appendChild(indicator);
         }
-        // Click to play another downloaded song
+        // Click to play another downloaded song. playLocalFile() ends this
+        // playback itself, which keeps the repeat mode and volume.
         if (!isPlaying) {
           item.addEventListener('click', () => {
-            // Trigger cleanup, then start new local playback
-            const cl = (window as any).__ytmdLocalCleanup;
-            if (cl) cl();
-            // Simulate clicking on this file - dispatch custom event
-            const ev = new CustomEvent('ytmd-play-local', { detail: f });
-            document.dispatchEvent(ev);
+            document.dispatchEvent(
+              new CustomEvent('ytmd-play-local', { detail: f }),
+            );
           });
         }
         sideList.appendChild(item);
       });
-      // Also fetch covers for items missing imageSrc
-      dlFiles.forEach(async (f: any, i: number) => {
-        if (!f.imageSrc) {
-          try {
-            const cr = (await window.ipcRenderer.invoke(
-              'ytmd:get-cover',
-              f.path,
-            )) as { imageSrc: string | null };
-            if (cr?.imageSrc) {
-              const thumbEl = sideList.children[i]?.querySelector(
-                'div > img',
-              ) as HTMLImageElement;
-              if (thumbEl) thumbEl.src = cr.imageSrc;
-              else {
-                const thumbContainer = sideList.children[i]?.querySelector(
-                  'div',
-                ) as HTMLElement;
-                if (thumbContainer) {
-                  thumbContainer.appendChild(createCover(cr.imageSrc));
-                }
-              }
-            }
-          } catch {
-            /* ignore */
-          }
-        }
-      });
     });
   }
 
-  // ---- TIME: hide original, inject our own overlay span ----
-  let customTime = document.getElementById('ytmd-local-time');
-  if (!customTime) {
-    customTime = document.createElement('span');
-    customTime.id = 'ytmd-local-time';
-    customTime.style.cssText =
-      'font-size:12px;color:rgba(255,255,255,0.7);white-space:nowrap;';
-    origTimeInfo?.parentElement?.insertBefore(customTime, origTimeInfo);
-  }
-  customTime.style.display = '';
-  customTime.textContent = '0:00 / 0:00';
-  if (origTimeInfo) origTimeInfo.style.display = 'none';
-
-  // ---- PROGRESS BAR: inject a custom overlay bar into #sliderContainer ----
-  const sliderContainer =
-    progressBar?.querySelector<HTMLElement>('#sliderContainer');
-  let customProgress = document.getElementById('ytmd-local-progress');
-  if (!customProgress) {
-    customProgress = document.createElement('div');
-    customProgress.id = 'ytmd-local-progress';
-    customProgress.style.cssText =
-      'position:absolute;top:0;left:0;right:0;bottom:0;z-index:10;cursor:pointer;';
-    customProgress.innerHTML =
-      '<div id="ytmd-local-trail" style="position:absolute;top:50%;left:0;height:3px;transform:translateY(-50%);background:#f00;border-radius:2px;pointer-events:none;width:0%;"></div><div id="ytmd-local-dot" style="position:absolute;top:50%;width:12px;height:12px;background:#f00;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;left:0%;"></div>';
-    if (sliderContainer) {
-      sliderContainer.style.position = 'relative';
-      sliderContainer.appendChild(customProgress);
+  // ---- STATE: the audio element's events update the bar and the media
+  // session (timeupdate fires about 4 times a second while playing) ----
+  let userSeeking = false;
+  const updateTime = () => {
+    const duration = isFinite(audio.duration) ? audio.duration : 0;
+    if (!userSeeking) {
+      progress.max = String(duration);
+      progress.value = String(audio.currentTime);
     }
-  }
-  customProgress.style.display = '';
-  const trail = document.getElementById('ytmd-local-trail')!;
-  const dot = document.getElementById('ytmd-local-dot')!;
-
-  // Hide original slider visuals
-  const origSliderBar = progressBar?.querySelector<HTMLElement>('#sliderBar');
-  const origKnobContainer = progressBar?.querySelector<HTMLElement>(
-    '#sliderKnobContainer',
-  );
-  if (origSliderBar) origSliderBar.style.opacity = '0';
-  if (origKnobContainer) origKnobContainer.style.opacity = '0';
-
-  let localActive = true;
-  let rafId = 0;
-
-  // ---- UPDATE LOOP ----
-  const updateLoop = () => {
-    if (!localActive) return;
-    if (localAudio && isFinite(localAudio.duration)) {
-      const cur = localAudio.currentTime;
-      const dur = localAudio.duration;
-      const pct = dur > 0 ? (cur / dur) * 100 : 0;
-      if (customTime)
-        customTime.textContent = formatTime(cur) + ' / ' + formatTime(dur);
-      if (trail) trail.style.width = pct + '%';
-      if (dot) dot.style.left = pct + '%';
-    }
-    rafId = requestAnimationFrame(updateLoop);
+    time.textContent = `${formatTime(Number(progress.value))} / ${formatTime(duration)}`;
   };
-  rafId = requestAnimationFrame(updateLoop);
+  const updatePositionState = () => {
+    if (!isFinite(audio.duration) || audio.duration <= 0) return;
+    try {
+      applyPositionState({
+        duration: audio.duration,
+        playbackRate: audio.playbackRate,
+        position: Math.min(audio.currentTime, audio.duration),
+      });
+    } catch {
+      // Invalid position while the source changes
+    }
+  };
+  const updatePlayState = () => {
+    const label = audio.paused ? 'Lecture' : 'Pause';
+    playPauseButton.innerHTML = audio.paused
+      ? localIcons.play
+      : localIcons.pause;
+    playPauseButton.setAttribute('aria-label', label);
+    playPauseButton.title = label;
+    applyPlaybackState(audio.paused ? 'paused' : 'playing');
+    updatePositionState();
+  };
+  const updateVolume = () => {
+    volume.value = String(Math.round(audio.volume * 100));
+    const label = audio.muted ? 'Réactiver le son' : 'Couper le son';
+    muteButton.innerHTML = audio.muted ? localIcons.muted : localIcons.volume;
+    muteButton.setAttribute('aria-label', label);
+    muteButton.title = label;
+  };
+  const updateRepeat = () => {
+    repeatButton.innerHTML =
+      repeatMode === 'ONE' ? localIcons.repeatOne : localIcons.repeat;
+    repeatButton.setAttribute('aria-pressed', String(repeatMode !== 'NONE'));
+    repeatButton.setAttribute('aria-label', repeatLabels[repeatMode]);
+    repeatButton.title = repeatLabels[repeatMode];
+  };
+  const onTimeChange = () => {
+    updateTime();
+    updatePositionState();
+  };
 
-  // ---- SEEK on custom progress bar click ----
-  const onProgressClick = (e: MouseEvent) => {
-    if (
-      !localActive ||
-      !localAudio ||
-      !isFinite(localAudio.duration) ||
-      !customProgress
-    )
+  // ---- CONTROLS ----
+  const play = () => {
+    if (localActive) audio.play().catch(() => {});
+  };
+  const pause = () => {
+    if (localActive) audio.pause();
+  };
+  const togglePlay = () => {
+    if (audio.paused) play();
+    else pause();
+  };
+  const seekTo = (seconds: number) => {
+    if (!localActive || !isFinite(audio.duration) || !isFinite(seconds)) {
       return;
-    const rect = customProgress.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    localAudio.currentTime = pct * localAudio.duration;
+    }
+    audio.currentTime = Math.max(0, Math.min(audio.duration, seconds));
   };
-  customProgress.addEventListener('click', onProgressClick);
+  // The files of the downloads list, in its order, one after the other
+  const playAdjacent = async (step: 1 | -1) => {
+    const files = (await listDownloads())?.files ?? [];
+    if (!localActive || files.length === 0) return;
+    const index = files.findIndex((f) => f.path === file.path);
+    const target =
+      index === -1
+        ? files[0]
+        : files[(index + step + files.length) % files.length];
+    playLocalFile(target);
+  };
+  const playback: LocalPlayback = {
+    play,
+    pause,
+    togglePlay,
+    next: () => {
+      playAdjacent(1);
+    },
+    previous: () => {
+      // Like YTM: back to the start first, then to the previous file
+      if (audio.currentTime > 3) seekTo(0);
+      else playAdjacent(-1);
+    },
+    seekTo,
+    seekBy: (seconds) => seekTo(audio.currentTime + seconds),
+    setVolume: (value) => {
+      if (!isFinite(value)) return;
+      const level = Math.max(0, Math.min(100, value));
+      audio.volume = level / 100;
+      // YTM picks up at the same level afterwards
+      api?.setVolume(level);
+    },
+    toggleMute: () => {
+      audio.muted = !audio.muted;
+    },
+    switchRepeat: () => {
+      repeatMode = nextRepeatMode[repeatMode];
+      updateRepeat();
+    },
+    getRepeatMode: () => repeatMode,
+  };
 
-  // ---- PLAY/PAUSE: button, player area click, and spacebar ----
-  const updatePlayPauseIcon = () => {
-    if (!playPauseBtn || !localAudio) return;
-    const icon = playPauseBtn.querySelector('yt-icon');
-    if (icon) {
-      icon.setAttribute(
-        'icon',
-        localAudio.paused ? 'yt-sys-icons:play_arrow' : 'yt-sys-icons:pause',
-      );
-    }
-    playPauseBtn.setAttribute(
-      'aria-label',
-      localAudio.paused ? 'Lecture' : 'Pause',
-    );
-    // Also try setting title
-    playPauseBtn.setAttribute('title', localAudio.paused ? 'Lecture' : 'Pause');
-  };
-  const togglePlayPause = () => {
-    if (!localActive || !localAudio) return;
-    if (localAudio.paused) {
-      localAudio.play().catch(() => {});
-    } else {
-      localAudio.pause();
-    }
-    updatePlayPauseIcon();
-  };
-  // Set initial icon state (playing)
-  updatePlayPauseIcon();
+  previousButton.addEventListener('click', playback.previous);
+  playPauseButton.addEventListener('click', togglePlay);
+  nextButton.addEventListener('click', playback.next);
+  repeatButton.addEventListener('click', playback.switchRepeat);
+  muteButton.addEventListener('click', playback.toggleMute);
+  volume.addEventListener('input', () =>
+    playback.setVolume(Number(volume.value)),
+  );
+  // Dragging only moves the thumb and the time; the file seeks on release
+  progress.addEventListener('input', () => {
+    userSeeking = true;
+    updateTime();
+  });
+  progress.addEventListener('change', () => {
+    userSeeking = false;
+    seekTo(Number(progress.value));
+  });
+
+  // ---- PLAY/PAUSE: player area click and spacebar ----
   const onPlayPause = (e: Event) => {
     if (!localActive) return;
     e.stopPropagation();
     e.preventDefault();
-    togglePlayPause();
+    togglePlay();
   };
-  if (playPauseBtn) playPauseBtn.addEventListener('click', onPlayPause, true);
   // Intercept clicks on the main player area
   const songMediaEl = document.querySelector<HTMLElement>('#song-media-window');
   if (songMediaEl) songMediaEl.addEventListener('click', onPlayPause, true);
-  // Intercept spacebar and media keys (but NOT when typing in inputs)
+  // Intercept spacebar and media keys (but NOT when typing in inputs, nor on
+  // the local bar, whose buttons take Space themselves)
   const onKeyDown = (e: KeyboardEvent) => {
-    if (!localActive) return;
-    // Don't intercept when user is typing in an input, textarea, or contentEditable
-    const tag = (e.target as HTMLElement)?.tagName;
+    if (!localActive || !(e.target instanceof HTMLElement)) return;
+    const tag = e.target.tagName;
     if (
       tag === 'INPUT' ||
       tag === 'TEXTAREA' ||
-      (e.target as HTMLElement)?.isContentEditable
+      e.target.isContentEditable ||
+      bar.contains(e.target)
     )
       return;
     if (e.code === 'Space' || e.key === ' ' || e.key === 'MediaPlayPause') {
       e.stopPropagation();
       e.preventDefault();
-      togglePlayPause();
+      togglePlay();
     }
   };
   document.addEventListener('keydown', onKeyDown, true);
 
-  // ---- REPLAY: when local audio ends, check repeat mode ----
-  const onEnded = async () => {
-    if (!localActive || !localAudio) return;
-    let repeatMode = 'NONE';
-    try {
-      const bar = document.querySelector<any>('ytmusic-player-bar');
-      repeatMode = bar?.getState?.()?.queue?.repeatMode || 'NONE';
-    } catch {
-      /* ignore */
-    }
-
+  // ---- REPLAY: when local audio ends, the local repeat mode decides ----
+  const onEnded = () => {
+    if (!localActive) return;
     if (repeatMode === 'ONE') {
       // Repeat ONE: replay the same track
-      localAudio.currentTime = 0;
-      localAudio.play().catch(() => {});
+      audio.currentTime = 0;
+      play();
     } else if (repeatMode === 'ALL') {
       // Repeat ALL: play next downloaded file in the list
-      try {
-        const res = (await window.ipcRenderer.invoke(
-          'ytmd:list-downloads',
-        )) as {
-          files: Array<{
-            name: string;
-            path: string;
-            size: number;
-            modified: number;
-            imageSrc?: string;
-          }>;
-        };
-        const dlFiles = res?.files || [];
-        if (dlFiles.length > 0) {
-          const currentIdx = dlFiles.findIndex((f) => f.path === file.path);
-          const nextIdx = (currentIdx + 1) % dlFiles.length;
-          const nextFile = dlFiles[nextIdx];
-          if (nextFile && (window as any).__ytmdPlayLocalFile) {
-            (window as any).__ytmdPlayLocalFile(nextFile);
-          }
-        }
-      } catch {
-        /* ignore */
-      }
+      playAdjacent(1);
     } else {
       // No repeat: stop playback, keep UI idle, block YTM from auto-playing
-      localAudio.pause();
-      localAudio.currentTime = 0;
-      if (localActive) updatePlayPauseIcon();
+      audio.currentTime = 0;
     }
   };
-  localAudio.addEventListener('ended', onEnded);
+
+  const audioListeners: [string, () => void][] = [
+    ['timeupdate', updateTime],
+    ['durationchange', onTimeChange],
+    ['seeked', onTimeChange],
+    ['ratechange', updatePositionState],
+    ['play', updatePlayState],
+    ['pause', updatePlayState],
+    ['volumechange', updateVolume],
+    ['ended', onEnded],
+  ];
+  for (const [type, listener] of audioListeners) {
+    audio.addEventListener(type, listener);
+  }
+
+  // ---- MEDIA SESSION: SMTC and media keys drive the local file ----
+  localPlayback = playback;
+  const localActionHandlers: Record<string, MediaSessionActionHandler> = {
+    play,
+    pause,
+    previoustrack: playback.previous,
+    nexttrack: playback.next,
+    seekto: (details) => {
+      if (details.seekTime !== undefined) seekTo(details.seekTime);
+    },
+    seekbackward: (details) => playback.seekBy(-(details.seekOffset ?? 10)),
+    seekforward: (details) => playback.seekBy(details.seekOffset ?? 10),
+  };
+  for (const action of localMediaActions) {
+    try {
+      applyActionHandler(action, localActionHandlers[action]);
+    } catch {
+      // Action not supported
+    }
+  }
+  showCover();
+  updateTime();
+  updatePlayState();
+  updateVolume();
+  updateRepeat();
 
   // ---- CLEANUP function ----
   const cleanup = () => {
     localActive = false;
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = 0;
-    uiObserver.disconnect();
-    customProgress?.removeEventListener('click', onProgressClick);
-    if (playPauseBtn)
-      playPauseBtn.removeEventListener('click', onPlayPause, true);
+    if (localPlayback === playback) localPlayback = null;
+    for (const [type, listener] of audioListeners) {
+      audio.removeEventListener(type, listener);
+    }
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
+    restorePageMediaSession();
     if (songMediaEl)
       songMediaEl.removeEventListener('click', onPlayPause, true);
     document.removeEventListener('keydown', onKeyDown, true);
-    if (localAudio) localAudio.removeEventListener('ended', onEnded);
-    if (volumeSlider)
-      volumeSlider.removeEventListener('value-change', onVolumeChange);
-    window.ipcRenderer.removeListener('ytmd:update-volume', onIpcVolume);
+    barResizeObserver.disconnect();
+    window.removeEventListener('resize', placeBar);
+    bar.remove();
+    if (ytmBar) ytmBar.inert = ytmBarWasInert;
     // Restore YTM video - remove our play/src overrides. Use the captured
     // `ytVideo` reference from patch time (never re-query, the element may
     // have been re-rendered) and defer the prototype restoration via
     // queueMicrotask so any in-flight assignment on the overridden setter
-    // settles before we delete the instance properties.
+    // settles before we delete the instance properties. A local file started
+    // right after this one has put its own overrides by then: keep those.
     if (ytVideo) {
       const v = ytVideo;
+      v.removeEventListener('play', onYtmPlay);
       queueMicrotask(() => {
-        delete (v as any).play; // remove instance override, restore prototype
-        delete (v as any).src; // remove src override
-        v.muted = false;
+        if (v.play === blockedPlay) Reflect.deleteProperty(v, 'play'); // restore the prototype's
+        if (Object.getOwnPropertyDescriptor(v, 'src')?.set === srcOverride) {
+          Reflect.deleteProperty(v, 'src');
+        }
+        if (!localPlayback) v.muted = false;
       });
     }
     // Restore original elements
-    if (origTimeInfo) origTimeInfo.style.display = '';
-    if (customTime) customTime.style.display = 'none';
-    if (customProgress) customProgress.style.display = 'none';
-    if (origSliderBar) origSliderBar.style.opacity = '';
-    if (origKnobContainer) origKnobContainer.style.opacity = '';
-    const ct = document.getElementById('ytmd-local-thumb');
-    if (ct) ct.style.display = 'none';
     const mc = document.getElementById('ytmd-local-main-cover');
     if (mc) mc.style.display = 'none';
     // Restore side panel
@@ -716,9 +981,9 @@ const playLocalFile = async (file: {
     );
     const lsp = document.getElementById('ytmd-local-side-panel');
     if (lsp) lsp.style.display = 'none';
-    (window as any).__ytmdLocalCleanup = null;
+    window.__ytmdLocalCleanup = null;
   };
-  (window as any).__ytmdLocalCleanup = cleanup;
+  window.__ytmdLocalCleanup = cleanup;
 };
 
 // Local playback is installed at module load: it must not depend on the
@@ -812,6 +1077,441 @@ function replaceNavIcons() {
   const miniGuideItemsSelector =
     '#mini-guide ytmusic-guide-section-renderer #items';
 
+  // ===== CUSTOM PAGES (Playlists, Downloads) =====
+  // A page lies over the content area, between the nav bar, the mini guide and
+  // the player bar. Opening it adds a history entry, a hash on the current URL,
+  // so it behaves like a route: Back closes it, Forward opens it again, and
+  // Back from a page YTM opened on top of it comes back to it. Escape, a guide
+  // entry, the logo and any navigation YTM starts close it.
+  type PageKey = 'playlists' | 'downloads';
+  const pageLabels: Record<PageKey, string> = {
+    playlists: 'Playlists',
+    downloads: 'Téléchargements',
+  };
+
+  let openPage: {
+    key: PageKey;
+    element: HTMLElement;
+    resizeObserver: ResizeObserver;
+    // Native guide entries whose highlight the page took
+    deselected: [entry: Element, how: 'attribute' | 'class'][];
+  } | null = null;
+  // History entries the pages opened, by Navigation API key. YTM's own
+  // replaceState can drop our hash, but not the key.
+  const pageEntries = new Map<string, PageKey>();
+  let pushingPageEntry = false;
+
+  const getCustomEntry = (key: PageKey) =>
+    document.querySelector<HTMLElement>(
+      `.ytmd-custom-entry[data-icon-key="${key}"]`,
+    );
+
+  const setEntryActive = (key: PageKey, active: boolean) => {
+    const entry = getCustomEntry(key);
+    if (!entry) return;
+    entry.classList.toggle('active', active);
+    if (active) entry.setAttribute('aria-current', 'page');
+    else entry.removeAttribute('aria-current');
+    const iconWrapper = entry.querySelector('.ytmd-nav-icon');
+    if (iconWrapper) {
+      iconWrapper.innerHTML = active
+        ? modernIcons[key].filled
+        : modernIcons[key].outline;
+    }
+  };
+
+  // The page's box comes from the real layout: CSS variables set on YTM's
+  // layout do not reach an element added to body
+  const placePage = () => {
+    if (!openPage) return;
+    const navBar = document
+      .querySelector('ytmusic-nav-bar')
+      ?.getBoundingClientRect();
+    const miniGuide = document
+      .querySelector('#mini-guide')
+      ?.getBoundingClientRect();
+    const playerBar = queryControl('playerBar')?.getBoundingClientRect();
+    const { style } = openPage.element;
+    style.top = `${navBar?.height ? navBar.bottom : 0}px`;
+    style.left = `${miniGuide?.width ? miniGuide.right : 0}px`;
+    style.bottom = `${playerBar?.height ? Math.max(0, window.innerHeight - playerBar.top) : 0}px`;
+  };
+
+  // Removes the page from the screen. Its history entry stays.
+  const hidePage = () => {
+    if (!openPage) return;
+    const { key, element, resizeObserver, deselected } = openPage;
+    openPage = null;
+    element.remove();
+    resizeObserver.disconnect();
+    setEntryActive(key, false);
+    // Give the native entry its highlight back. When YTM moves to another
+    // page, it updates the highlight itself afterwards.
+    for (const [entry, how] of deselected) {
+      if (!entry.isConnected) continue;
+      if (how === 'attribute') entry.setAttribute('active', '');
+      else entry.classList.add('iron-selected');
+    }
+  };
+
+  // Goes back from the page's history entry when it is the current one
+  const leavePageEntry = () => {
+    const current = window.navigation.currentEntry?.key;
+    if (current && pageEntries.has(current)) history.back();
+  };
+
+  const closePage = () => {
+    hidePage();
+    leavePageEntry();
+  };
+
+  const fillPlaylistsPage = (page: HTMLElement) => {
+    const content = document.createElement('div');
+    content.style.cssText = 'flex:1;overflow-y:auto;padding:0 40px 24px;';
+    page.appendChild(content);
+
+    // Fetch playlists from the hidden full guide's secondary section
+    const plEntries = document.querySelectorAll<
+      Element & {
+        data?: {
+          navigationEndpoint?: { browseEndpoint?: { browseId?: string } };
+          formattedTitle?: { runs?: { text?: string }[] };
+        };
+      }
+    >(
+      'tp-yt-app-drawer #contentContainer ytmusic-guide-section-renderer:not([is-primary]) ytmusic-guide-entry-renderer',
+    );
+    if (plEntries.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'Aucune playlist trouvée';
+      empty.style.cssText =
+        'color:rgba(255,255,255,0.5);font-size:16px;padding:40px 0;text-align:center;';
+      content.appendChild(empty);
+      return;
+    }
+    plEntries.forEach((plEntry) => {
+      const entryData = plEntry.data;
+      const browseId =
+        entryData?.navigationEndpoint?.browseEndpoint?.browseId || '';
+      const plTitle =
+        entryData?.formattedTitle?.runs?.[0]?.text ||
+        plEntry.querySelector('yt-formatted-string')?.textContent?.trim() ||
+        'Playlist';
+      const thumb = plEntry.querySelector('img');
+      const thumbSrc = thumb?.src || '';
+
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.style.cssText = `
+        display:flex;align-items:center;width:100%;padding:12px 16px;border-radius:12px;
+        border:none;background:none;color:inherit;font:inherit;text-align:left;
+        cursor:pointer;transition:background 200ms;margin-bottom:2px;
+      `;
+      row.addEventListener('mouseenter', () => {
+        row.style.background = 'rgba(255,255,255,0.06)';
+      });
+      row.addEventListener('mouseleave', () => {
+        row.style.background = '';
+      });
+
+      if (thumbSrc) {
+        const img = document.createElement('img');
+        img.src = thumbSrc;
+        img.alt = '';
+        img.style.cssText =
+          'width:48px;height:48px;border-radius:8px;object-fit:cover;margin-right:16px;flex-shrink:0;';
+        row.appendChild(img);
+      } else {
+        const iconEl = document.createElement('div');
+        iconEl.innerHTML = modernIcons.playlists.outline;
+        iconEl.style.cssText =
+          'width:48px;height:48px;display:flex;align-items:center;justify-content:center;border-radius:8px;background:rgba(255,255,255,0.06);margin-right:16px;flex-shrink:0;color:rgba(255,255,255,0.5);';
+        row.appendChild(iconEl);
+      }
+
+      const nameEl = document.createElement('div');
+      nameEl.textContent = plTitle;
+      nameEl.style.cssText =
+        'font-size:15px;font-weight:500;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      row.appendChild(nameEl);
+
+      // The page's history entry stays, so Back from the playlist comes back here
+      row.addEventListener('click', () => {
+        hidePage();
+        if (browseId) {
+          document
+            .querySelector<YouTubeMusicAppElement>('ytmusic-app')
+            ?.navigate(browseId);
+        }
+      });
+
+      content.appendChild(row);
+    });
+  };
+
+  const fillDownloadsPage = async (page: HTMLElement) => {
+    const result = await listDownloads();
+    const files = result?.files ?? [];
+
+    // Folder path subtitle
+    const sub = document.createElement('div');
+    sub.textContent = result?.folder ?? '';
+    sub.style.cssText =
+      'color:rgba(255,255,255,0.35);font-size:12px;padding:0 40px 12px;flex-shrink:0;';
+    page.appendChild(sub);
+
+    // File count
+    const countEl = document.createElement('div');
+    let fileCount = files.length;
+    const showCount = () => {
+      countEl.textContent = `${fileCount} titre${fileCount !== 1 ? 's' : ''}`;
+    };
+    showCount();
+    countEl.style.cssText =
+      'color:rgba(255,255,255,0.5);font-size:13px;padding:0 40px 16px;flex-shrink:0;';
+    page.appendChild(countEl);
+
+    // Scrollable song list
+    const list = document.createElement('div');
+    list.style.cssText = 'flex:1;overflow-y:auto;padding:0 24px 24px;';
+    page.appendChild(list);
+
+    if (files.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'Aucun fichier téléchargé';
+      empty.style.cssText =
+        'color:rgba(255,255,255,0.5);font-size:16px;padding:60px 0;text-align:center;';
+      list.appendChild(empty);
+      return;
+    }
+    files.forEach((file) => {
+      const row = document.createElement('div');
+      row.style.cssText = `
+        display:flex;align-items:center;padding:10px 16px;border-radius:10px;
+        cursor:pointer;transition:background 200ms;margin-bottom:1px;
+      `;
+      row.addEventListener('mouseenter', () => {
+        row.style.background = 'rgba(255,255,255,0.04)';
+      });
+      row.addEventListener('mouseleave', () => {
+        row.style.background = '';
+      });
+
+      // The row's click plays the file; this button lets the keyboard reach it
+      const playButton = document.createElement('button');
+      playButton.type = 'button';
+      playButton.style.cssText =
+        'display:flex;align-items:center;flex:1;min-width:0;padding:0;border:none;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;';
+
+      const iconEl = document.createElement('div');
+      iconEl.innerHTML =
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="rgba(255,255,255,0.4)"><polygon points="5,3 19,12 5,21"/></svg>';
+      iconEl.style.cssText =
+        'width:32px;height:32px;display:flex;align-items:center;justify-content:center;margin-right:12px;flex-shrink:0;';
+
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0;';
+      const nameEl = document.createElement('div');
+      const { title, artist } = parseFileName(file.name);
+      nameEl.textContent = title;
+      nameEl.style.cssText =
+        'font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+
+      const metaLine = document.createElement('div');
+      metaLine.style.cssText = 'display:flex;gap:8px;margin-top:2px;';
+      if (artist) {
+        const artistEl = document.createElement('span');
+        artistEl.textContent = artist;
+        artistEl.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.45);';
+        metaLine.appendChild(artistEl);
+      }
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+      const sizeEl = document.createElement('span');
+      sizeEl.textContent = sizeMB + ' MB';
+      sizeEl.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.3);';
+      metaLine.appendChild(sizeEl);
+      info.appendChild(nameEl);
+      info.appendChild(metaLine);
+      playButton.append(iconEl, info);
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.setAttribute('aria-label', `Supprimer ${file.name}`);
+      deleteBtn.title = 'Supprimer';
+      deleteBtn.innerHTML =
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="rgba(255,255,255,0.35)"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
+      deleteBtn.style.cssText =
+        'width:32px;height:32px;display:flex;align-items:center;justify-content:center;padding:0;border:none;background:none;border-radius:50%;cursor:pointer;flex-shrink:0;transition:background 200ms;margin-left:8px;';
+      deleteBtn.addEventListener('mouseenter', () => {
+        deleteBtn.style.background = 'rgba(255,80,80,0.15)';
+      });
+      deleteBtn.addEventListener('mouseleave', () => {
+        deleteBtn.style.background = '';
+      });
+      deleteBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        // The main process moves the track, its .meta.json and its own
+        // cover to the recycle bin, and says whether that worked
+        const question = `Placer « ${file.name} » dans la corbeille ?`;
+        if (!window.confirm(question)) return;
+        const deleted = (await window.ipcRenderer.invoke(
+          'ytmd:delete-download',
+          file.path,
+        )) as { success?: boolean } | undefined;
+        if (deleted?.success) {
+          row.remove();
+          fileCount--;
+          showCount();
+        } else {
+          window.alert(
+            `« ${file.name} » n'a pas pu être placé dans la corbeille.`,
+          );
+        }
+      });
+
+      row.appendChild(playButton);
+      row.appendChild(deleteBtn);
+      // Play local file in-app with its own audio and player bar
+      row.addEventListener('click', () => {
+        closePage();
+        playLocalFile(file);
+      });
+      list.appendChild(row);
+    });
+  };
+
+  const showPage = (key: PageKey) => {
+    hidePage();
+
+    // Deselect native YTM entries
+    const deselected: [Element, 'attribute' | 'class'][] = [];
+    document
+      .querySelectorAll('ytmusic-guide-entry-renderer[active]')
+      .forEach((e) => {
+        e.removeAttribute('active');
+        deselected.push([e, 'attribute']);
+      });
+    document
+      .querySelectorAll('ytmusic-guide-entry-renderer.iron-selected')
+      .forEach((e) => {
+        e.classList.remove('iron-selected');
+        deselected.push([e, 'class']);
+      });
+
+    // Create page div — covers content area with solid background
+    const page = document.createElement('div');
+    page.id = `ytmd-${key}-page`;
+    page.setAttribute('role', 'region');
+    page.setAttribute('aria-label', pageLabels[key]);
+    page.tabIndex = -1;
+    page.style.cssText = `
+      position: fixed; right: 12px;
+      background: rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(30px) saturate(180%);
+      -webkit-backdrop-filter: blur(30px) saturate(180%);
+      color: #fff; font-family: 'Satoshi', sans-serif;
+      z-index: 9999; display: flex; flex-direction: column; outline: none;
+    `;
+
+    // Header
+    const header = document.createElement('div');
+    header.style.cssText = 'padding: 24px 40px 16px; flex-shrink: 0;';
+    const title = document.createElement('h2');
+    title.textContent = pageLabels[key];
+    title.style.cssText =
+      'margin:0; font-size:28px; font-weight:600; letter-spacing:-0.02em;';
+    header.appendChild(title);
+    page.appendChild(header);
+
+    document.body.appendChild(page);
+    const resizeObserver = new ResizeObserver(placePage);
+    for (const element of [
+      document.querySelector('ytmusic-nav-bar'),
+      document.querySelector('#mini-guide'),
+      queryControl('playerBar'),
+    ]) {
+      if (element) resizeObserver.observe(element);
+    }
+    openPage = { key, element: page, resizeObserver, deselected };
+    placePage();
+    setEntryActive(key, true);
+
+    if (key === 'playlists') fillPlaylistsPage(page);
+    else fillDownloadsPage(page);
+    page.focus({ preventScroll: true });
+  };
+
+  const togglePage = (key: PageKey) => {
+    if (openPage?.key === key) {
+      closePage();
+      return;
+    }
+    showPage(key);
+    const url = `${location.pathname}${location.search}#ytmd-${key}`;
+    const current = window.navigation.currentEntry?.key;
+    // One history entry for the pages: switching pages replaces it
+    if (current && pageEntries.has(current)) {
+      history.replaceState(history.state as unknown, '', url);
+      pageEntries.set(current, key);
+      return;
+    }
+    pushingPageEntry = true;
+    try {
+      history.pushState(history.state as unknown, '', url);
+    } finally {
+      pushingPageEntry = false;
+    }
+    const entryKey = window.navigation.currentEntry?.key;
+    if (entryKey) pageEntries.set(entryKey, key);
+  };
+
+  // Back and Forward onto a page's entry open that page, onto any other entry
+  // close it. A new entry YTM pushes means it is going to another page.
+  window.navigation.addEventListener('navigate', (event) => {
+    if (event.navigationType === 'traverse') {
+      const key = pageEntries.get(event.destination.key);
+      if (!key) hidePage();
+      else if (openPage?.key !== key) showPage(key);
+    } else if (event.navigationType === 'push' && !pushingPageEntry) {
+      hidePage();
+    }
+  });
+
+  // Escape closes the page before YTM sees the key
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key !== 'Escape' || !openPage) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const { key } = openPage;
+      closePage();
+      getCustomEntry(key)?.focus();
+    },
+    true,
+  );
+
+  // A guide entry or the logo closes the page. Any other entry or the logo
+  // navigates, and the page's history entry stays for Back. The entry of the
+  // page YTM already shows does not navigate, so the page's entry is left.
+  document.addEventListener(
+    'click',
+    (e) => {
+      if (!openPage || !(e.target instanceof Element)) return;
+      const guideEntry = e.target.closest('ytmusic-guide-entry-renderer');
+      if (guideEntry) {
+        const isCurrent = openPage.deselected.some(
+          ([entry]) => entry === guideEntry,
+        );
+        hidePage();
+        if (isCurrent) leavePageEntry();
+      } else if (e.target.closest('ytmusic-logo')) {
+        hidePage();
+      }
+    },
+    true,
+  );
+
   // Add custom sidebar entries into the MINI GUIDE (the actually visible sidebar)
   const addCustomEntries = () => {
     const miniGuideItems = document.querySelector(miniGuideItemsSelector);
@@ -819,17 +1519,16 @@ function replaceNavIcons() {
       return;
     }
 
-    const createEntry = (
-      iconKey: string,
-      label: string,
-      onClick: () => void,
-    ) => {
-      const entry = document.createElement('div');
+    const createEntry = (key: PageKey) => {
+      const entry = document.createElement('button');
+      entry.type = 'button';
       entry.className = 'ytmd-custom-entry';
-      entry.setAttribute('data-icon-key', iconKey);
+      entry.setAttribute('data-icon-key', key);
+      entry.setAttribute('aria-label', pageLabels[key]);
       entry.style.cssText = `
         display: flex; align-items: center; justify-content: center;
-        width: 40px; height: 40px; margin: 2px auto;
+        width: 40px; height: 40px; margin: 2px auto; padding: 0;
+        border: none; background: none; font: inherit;
         border-radius: 12px; cursor: pointer; color: rgba(255,255,255,0.7);
         transition: background 400ms cubic-bezier(0.16,1,0.3,1), transform 400ms cubic-bezier(0.16,1,0.3,1);
         position: relative; box-sizing: border-box;
@@ -839,7 +1538,7 @@ function replaceNavIcons() {
       iconWrapper.className = 'ytmd-nav-icon';
       iconWrapper.style.cssText =
         'display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;color:inherit;';
-      iconWrapper.innerHTML = modernIcons[iconKey].outline;
+      iconWrapper.innerHTML = modernIcons[key].outline;
       entry.appendChild(iconWrapper);
 
       entry.addEventListener('mousedown', () => {
@@ -848,328 +1547,15 @@ function replaceNavIcons() {
       entry.addEventListener('mouseup', () => {
         entry.style.transform = '';
       });
-      entry.addEventListener('click', onClick);
-      entry.title = label;
+      entry.addEventListener('click', () => togglePage(key));
+      entry.title = pageLabels[key];
       return entry;
     };
 
-    // --- Page helpers (solid page covering the content area) ---
-    const deselectAllCustomEntries = () => {
-      document.querySelectorAll('.ytmd-custom-entry.active').forEach((e) => {
-        e.classList.remove('active');
-        const iw = e.querySelector('.ytmd-nav-icon');
-        const key = e.getAttribute('data-icon-key');
-        if (iw && key && modernIcons[key])
-          iw.innerHTML = modernIcons[key].outline;
-      });
-    };
-
-    const closePage = (id: string) => {
-      document.getElementById(id)?.remove();
-    };
-
-    const buildPage = (id: string, titleText: string, entry: HTMLElement) => {
-      // If page already showing, toggle off
-      const existing = document.getElementById(id);
-      if (existing) {
-        existing.remove();
-        entry.classList.remove('active');
-        const iw = entry.querySelector('.ytmd-nav-icon');
-        const key = entry.getAttribute('data-icon-key');
-        if (iw && key && modernIcons[key])
-          iw.innerHTML = modernIcons[key].outline;
-        return null;
-      }
-
-      // Close any other custom page
-      closePage('ytmd-downloads-page');
-      closePage('ytmd-playlists-page');
-      deselectAllCustomEntries();
-
-      // Deselect native YTM entries
-      document
-        .querySelectorAll('ytmusic-guide-entry-renderer[active]')
-        .forEach((e) => e.removeAttribute('active'));
-      document
-        .querySelectorAll('ytmusic-guide-entry-renderer.iron-selected')
-        .forEach((e) => e.classList.remove('iron-selected'));
-
-      // Mark this entry as active + filled icon
-      entry.classList.add('active');
-      const iconWrapper = entry.querySelector('.ytmd-nav-icon');
-      const iconKey = entry.getAttribute('data-icon-key');
-      if (iconWrapper && iconKey && modernIcons[iconKey])
-        iconWrapper.innerHTML = modernIcons[iconKey].filled;
-
-      // Create page div — covers content area with solid background
-      const page = document.createElement('div');
-      page.id = id;
-      page.style.cssText = `
-        position: fixed; top: 122px; left: 56px; right: 12px; bottom: 72px;
-        background: rgba(0, 0, 0, 0.35);
-        backdrop-filter: blur(30px) saturate(180%);
-        -webkit-backdrop-filter: blur(30px) saturate(180%);
-        color: #fff; font-family: 'Satoshi', sans-serif;
-        z-index: 9999; display: flex; flex-direction: column;
-      `;
-
-      // Header
-      const header = document.createElement('div');
-      header.style.cssText = 'padding: 24px 40px 16px; flex-shrink: 0;';
-      const title = document.createElement('h2');
-      title.textContent = titleText;
-      title.style.cssText =
-        'margin:0; font-size:28px; font-weight:600; letter-spacing:-0.02em;';
-      header.appendChild(title);
-      page.appendChild(header);
-
-      document.body.appendChild(page);
-      return page;
-    };
-
-    // Watch for YTM native navigation to cleanup custom pages
-    const navEntries = document.querySelectorAll(
-      'ytmusic-guide-entry-renderer',
-    );
-    navEntries.forEach((navEntry) => {
-      navEntry.addEventListener('click', () => {
-        // Small delay to let YTM process the navigation
-        setTimeout(() => {
-          const hasCustomPage =
-            document.getElementById('ytmd-downloads-page') ||
-            document.getElementById('ytmd-playlists-page');
-          if (hasCustomPage) {
-            closePage('ytmd-downloads-page');
-            closePage('ytmd-playlists-page');
-            deselectAllCustomEntries();
-          }
-        }, 50);
-      });
-    });
-
-    // ===== PLAYLISTS PAGE =====
-    let playlistsEntryRef: HTMLElement | null = null;
-    const playlistsEntry = createEntry('playlists', 'Playlists', async () => {
-      const page = buildPage(
-        'ytmd-playlists-page',
-        'Playlists',
-        playlistsEntryRef!,
-      );
-      if (!page) return;
-
-      const content = document.createElement('div');
-      content.style.cssText = 'flex:1;overflow-y:auto;padding:0 40px 24px;';
-      page.appendChild(content);
-
-      // Fetch playlists from the hidden full guide's secondary section
-      const plEntries = document.querySelectorAll(
-        'tp-yt-app-drawer #contentContainer ytmusic-guide-section-renderer:not([is-primary]) ytmusic-guide-entry-renderer',
-      );
-      if (plEntries.length === 0) {
-        const empty = document.createElement('div');
-        empty.textContent = 'Aucune playlist trouvée';
-        empty.style.cssText =
-          'color:rgba(255,255,255,0.5);font-size:16px;padding:40px 0;text-align:center;';
-        content.appendChild(empty);
-      } else {
-        plEntries.forEach((plEntry) => {
-          const entryData = (plEntry as any)?.data;
-          const browseId =
-            entryData?.navigationEndpoint?.browseEndpoint?.browseId || '';
-          const plTitle =
-            entryData?.formattedTitle?.runs?.[0]?.text ||
-            plEntry.querySelector('yt-formatted-string')?.textContent?.trim() ||
-            'Playlist';
-          const thumb = plEntry.querySelector('img');
-          const thumbSrc = thumb?.src || '';
-
-          const row = document.createElement('div');
-          row.style.cssText = `
-            display:flex;align-items:center;padding:12px 16px;border-radius:12px;
-            cursor:pointer;transition:background 200ms;margin-bottom:2px;
-          `;
-          row.addEventListener('mouseenter', () => {
-            row.style.background = 'rgba(255,255,255,0.06)';
-          });
-          row.addEventListener('mouseleave', () => {
-            row.style.background = '';
-          });
-
-          if (thumbSrc) {
-            const img = document.createElement('img');
-            img.src = thumbSrc;
-            img.style.cssText =
-              'width:48px;height:48px;border-radius:8px;object-fit:cover;margin-right:16px;flex-shrink:0;';
-            row.appendChild(img);
-          } else {
-            const iconEl = document.createElement('div');
-            iconEl.innerHTML = modernIcons.playlists.outline;
-            iconEl.style.cssText =
-              'width:48px;height:48px;display:flex;align-items:center;justify-content:center;border-radius:8px;background:rgba(255,255,255,0.06);margin-right:16px;flex-shrink:0;color:rgba(255,255,255,0.5);';
-            row.appendChild(iconEl);
-          }
-
-          const nameEl = document.createElement('div');
-          nameEl.textContent = plTitle;
-          nameEl.style.cssText =
-            'font-size:15px;font-weight:500;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-          row.appendChild(nameEl);
-
-          row.addEventListener('click', () => {
-            closePage('ytmd-playlists-page');
-            deselectAllCustomEntries();
-            if (browseId) {
-              document.querySelector<any>('ytmusic-app')?.navigate(browseId);
-            }
-          });
-
-          content.appendChild(row);
-        });
-      }
-    });
-    playlistsEntryRef = playlistsEntry;
-
-    // ===== DOWNLOADS PAGE =====
-    let downloadsEntryRef: HTMLElement | null = null;
-    const downloadsEntry = createEntry(
-      'downloads',
-      'Téléchargements',
-      async () => {
-        const page = buildPage(
-          'ytmd-downloads-page',
-          'Téléchargements',
-          downloadsEntryRef!,
-        );
-        if (!page) return;
-
-        const result = (await window.ipcRenderer.invoke(
-          'ytmd:list-downloads',
-        )) as {
-          folder: string;
-          files: Array<{
-            name: string;
-            path: string;
-            size: number;
-            modified: number;
-            imageSrc?: string;
-          }>;
-        };
-
-        // Folder path subtitle
-        const sub = document.createElement('div');
-        sub.textContent = result.folder;
-        sub.style.cssText =
-          'color:rgba(255,255,255,0.35);font-size:12px;padding:0 40px 12px;flex-shrink:0;';
-        page.appendChild(sub);
-
-        // File count
-        const countEl = document.createElement('div');
-        countEl.textContent = `${result.files.length} titre${result.files.length !== 1 ? 's' : ''}`;
-        countEl.style.cssText =
-          'color:rgba(255,255,255,0.5);font-size:13px;padding:0 40px 16px;flex-shrink:0;';
-        page.appendChild(countEl);
-
-        // Scrollable song list
-        const list = document.createElement('div');
-        list.style.cssText = 'flex:1;overflow-y:auto;padding:0 24px 24px;';
-        page.appendChild(list);
-
-        if (result.files.length === 0) {
-          const empty = document.createElement('div');
-          empty.textContent = 'Aucun fichier téléchargé';
-          empty.style.cssText =
-            'color:rgba(255,255,255,0.5);font-size:16px;padding:60px 0;text-align:center;';
-          list.appendChild(empty);
-        } else {
-          result.files.forEach((file) => {
-            const row = document.createElement('div');
-            row.style.cssText = `
-            display:flex;align-items:center;padding:10px 16px;border-radius:10px;
-            cursor:pointer;transition:background 200ms;margin-bottom:1px;
-          `;
-            row.addEventListener('mouseenter', () => {
-              row.style.background = 'rgba(255,255,255,0.04)';
-            });
-            row.addEventListener('mouseleave', () => {
-              row.style.background = '';
-            });
-
-            const iconEl = document.createElement('div');
-            iconEl.innerHTML =
-              '<svg width="16" height="16" viewBox="0 0 24 24" fill="rgba(255,255,255,0.4)"><polygon points="5,3 19,12 5,21"/></svg>';
-            iconEl.style.cssText =
-              'width:32px;height:32px;display:flex;align-items:center;justify-content:center;margin-right:12px;flex-shrink:0;';
-
-            const info = document.createElement('div');
-            info.style.cssText = 'flex:1;min-width:0;';
-            const nameEl = document.createElement('div');
-            const cleanName = file.name.replace(/\.[^.]+$/, '');
-            const parts = cleanName.split(' - ');
-            nameEl.textContent =
-              parts.length > 1 ? parts.slice(1).join(' - ') : cleanName;
-            nameEl.style.cssText =
-              'font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-
-            const metaLine = document.createElement('div');
-            metaLine.style.cssText = 'display:flex;gap:8px;margin-top:2px;';
-            if (parts.length > 1) {
-              const artist = document.createElement('span');
-              artist.textContent = parts[0];
-              artist.style.cssText =
-                'font-size:12px;color:rgba(255,255,255,0.45);';
-              metaLine.appendChild(artist);
-            }
-            const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-            const sizeEl = document.createElement('span');
-            sizeEl.textContent = sizeMB + ' MB';
-            sizeEl.style.cssText =
-              'font-size:12px;color:rgba(255,255,255,0.3);';
-            metaLine.appendChild(sizeEl);
-            info.appendChild(nameEl);
-            info.appendChild(metaLine);
-
-            const deleteBtn = document.createElement('div');
-            deleteBtn.innerHTML =
-              '<svg width="14" height="14" viewBox="0 0 24 24" fill="rgba(255,255,255,0.35)"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
-            deleteBtn.style.cssText =
-              'width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;flex-shrink:0;transition:background 200ms;margin-left:8px;';
-            deleteBtn.addEventListener('mouseenter', () => {
-              deleteBtn.style.background = 'rgba(255,80,80,0.15)';
-            });
-            deleteBtn.addEventListener('mouseleave', () => {
-              deleteBtn.style.background = '';
-            });
-            deleteBtn.addEventListener('click', async (e) => {
-              e.stopPropagation();
-              // The main process moves the track, its .meta.json and its own
-              // cover to the recycle bin, and says whether that worked
-              const question = `Placer « ${file.name} » dans la corbeille ?`;
-              if (!window.confirm(question)) return;
-              const result = (await window.ipcRenderer.invoke(
-                'ytmd:delete-download',
-                file.path,
-              )) as { success?: boolean } | undefined;
-              if (result?.success) row.remove();
-            });
-
-            row.appendChild(iconEl);
-            row.appendChild(info);
-            row.appendChild(deleteBtn);
-            // Play local file in-app with custom audio + full player bar takeover
-            row.addEventListener('click', () => {
-              closePage('ytmd-downloads-page');
-              deselectAllCustomEntries();
-              (window as any).__ytmdPlayLocalFile(file);
-            });
-            list.appendChild(row);
-          });
-        }
-      },
-    );
-    downloadsEntryRef = downloadsEntry;
-
-    miniGuideItems.appendChild(playlistsEntry);
-    miniGuideItems.appendChild(downloadsEntry);
+    miniGuideItems.appendChild(createEntry('playlists'));
+    miniGuideItems.appendChild(createEntry('downloads'));
+    // Entries put back after a re-render show the open page
+    if (openPage) setEntryActive(openPage.key, true);
   };
 
   // Re-inject if Polymer removes them
@@ -1288,7 +1674,7 @@ function replaceNavIcons() {
   // Kick off the icon/sidebar setup as soon as the guide exists, rather than
   // betting on a fixed 1s delay (which fails on slow boots). `initialApply`
   // keeps its own bounded retry for the icon DOM.
-  void waitForElement('ytmusic-guide-renderer, ytmusic-app-layout').then(() => {
+  waitForElement('ytmusic-guide-renderer, ytmusic-app-layout').then(() => {
     initialApply();
   });
 
@@ -1362,7 +1748,7 @@ function replaceNavIcons() {
     return true;
   };
 
-  void waitForElement('#song-media-window').then(() => {
+  waitForElement('#song-media-window').then(() => {
     installGhostFix();
 
     // Re-install when YTM re-creates ytmusic-player, and #song-media-window
@@ -1424,84 +1810,105 @@ async function onApiLoaded() {
       window.dispatchEvent(new Event('resize')),
     );
 
+  // During local playback, the playback commands drive the local file.
+  // Otherwise a click on the bar's own button does what YTM does on a click.
   window.ipcRenderer.on('ytmd:previous-video', () => {
-    document
-      .querySelector<HTMLElement>('.previous-button.ytmusic-player-bar')
-      ?.click();
+    if (localPlayback) return localPlayback.previous();
+    const button = queryControl('previous');
+    if (button) button.click();
+    else api?.previousVideo();
   });
   window.ipcRenderer.on('ytmd:next-video', () => {
-    document
-      .querySelector<HTMLElement>('.next-button.ytmusic-player-bar')
-      ?.click();
+    if (localPlayback) return localPlayback.next();
+    const button = queryControl('next');
+    if (button) button.click();
+    else api?.nextVideo();
   });
   window.ipcRenderer.on('ytmd:play', (_) => {
-    api?.playVideo();
+    if (localPlayback) localPlayback.play();
+    else api?.playVideo();
   });
   window.ipcRenderer.on('ytmd:pause', (_) => {
-    api?.pauseVideo();
-  });
-  window.ipcRenderer.on('ytmd:toggle-play', (_) => {
-    if (api?.getPlayerState() === 2) api?.playVideo();
+    if (localPlayback) localPlayback.pause();
     else api?.pauseVideo();
   });
-  window.ipcRenderer.on('ytmd:seek-to', (_, t: number) => api!.seekTo(t));
-  window.ipcRenderer.on('ytmd:seek-by', (_, t: number) => api!.seekBy(t));
+  window.ipcRenderer.on('ytmd:toggle-play', (_) => {
+    if (localPlayback) localPlayback.togglePlay();
+    else if (api?.getPlayerState() === 2) api?.playVideo();
+    else api?.pauseVideo();
+  });
+  window.ipcRenderer.on('ytmd:seek-to', (_, t: number) => {
+    if (localPlayback) localPlayback.seekTo(t);
+    else api?.seekTo(t);
+  });
+  window.ipcRenderer.on('ytmd:seek-by', (_, t: number) => {
+    if (localPlayback) localPlayback.seekBy(t);
+    else api?.seekBy(t);
+  });
   window.ipcRenderer.on('ytmd:shuffle', () => {
-    document
-      .querySelector<
-        HTMLElement & { queue: { shuffle: () => void } }
-      >('ytmusic-player-bar')
-      ?.queue.shuffle();
+    const playerBar = queryControl<
+      HTMLElement & { queue?: { shuffle: () => void } }
+    >('playerBar');
+    if (playerBar?.queue) playerBar.queue.shuffle();
+    else queryControl('shuffle')?.click();
   });
 
-  const isShuffled = () => {
-    const isShuffled =
-      document
-        .querySelector<HTMLElement>('ytmusic-player-bar')
-        ?.attributes.getNamedItem('shuffle-on') ?? null;
-
-    return isShuffled !== null;
-  };
-
   window.ipcRenderer.on('ytmd:get-shuffle', () => {
-    window.ipcRenderer.send('ytmd:get-shuffle-response', isShuffled());
+    window.ipcRenderer.send('ytmd:get-shuffle-response', isShuffleOn());
   });
 
   window.ipcRenderer.on(
     'ytmd:update-like',
     (_, status: 'LIKE' | 'DISLIKE' = 'LIKE') => {
-      document
-        .querySelector<
-          HTMLElement & { updateLikeStatus: (status: string) => void }
-        >('#like-button-renderer')
-        ?.updateLikeStatus(status);
+      const likeControl = queryControl<
+        HTMLElement & { updateLikeStatus?: (status: string) => void }
+      >('like');
+      if (likeControl?.updateLikeStatus) {
+        likeControl.updateLikeStatus(status);
+        return;
+      }
+      // The new bar's buttons toggle, so only press the one that is off
+      const button = queryControl(
+        status === 'DISLIKE' ? 'dislikeButton' : 'likeButton',
+      );
+      if (button?.getAttribute('aria-pressed') !== 'true') button?.click();
     },
   );
-  window.ipcRenderer.on('ytmd:switch-repeat', (_, repeat = 1) => {
-    for (let i = 0; i < repeat; i++) {
-      document
-        .querySelector<
-          HTMLElement & { onRepeatButtonClick: () => void }
-        >('ytmusic-player-bar')
-        ?.onRepeatButtonClick();
+  window.ipcRenderer.on('ytmd:switch-repeat', async (_, repeat = 1) => {
+    for (let i = 0; i < Number(repeat); i++) {
+      if (localPlayback) {
+        localPlayback.switchRepeat();
+        continue;
+      }
+      const playerBar = queryControl<
+        HTMLElement & { onRepeatButtonClick?: () => void }
+      >('playerBar');
+      if (playerBar?.onRepeatButtonClick) {
+        playerBar.onRepeatButtonClick();
+      } else {
+        // The new bar's button ignores a second click in the same task
+        queryControl('repeat')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
     }
   });
   window.ipcRenderer.on('ytmd:update-volume', (_, volume: number) => {
-    document
-      .querySelector<
-        HTMLElement & { updateVolume: (volume: number) => void }
-      >('ytmusic-player-bar')
-      ?.updateVolume(volume);
+    if (localPlayback) return localPlayback.setVolume(volume);
+    const playerBar = queryControl<
+      HTMLElement & { updateVolume?: (volume: number) => void }
+    >('playerBar');
+    const slider = queryControl('volumeSlider');
+    if (playerBar?.updateVolume) {
+      playerBar.updateVolume(volume);
+    } else if (slider instanceof HTMLInputElement) {
+      // The new bar's slider applies what the user sets on it
+      slider.value = String(volume);
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      slider.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      api?.setVolume(volume);
+    }
   });
-
-  const isFullscreen = () => {
-    const isFullscreen =
-      document
-        .querySelector<HTMLElement>('ytmusic-player-bar')
-        ?.attributes.getNamedItem('player-fullscreened') ?? null;
-
-    return isFullscreen !== null;
-  };
 
   const clickFullscreenButton = (isFullscreenValue: boolean) => {
     const fullscreen = isFullscreen();
@@ -1510,7 +1917,12 @@ async function onApiLoaded() {
     }
 
     if (fullscreen) {
-      document.querySelector<HTMLElement>('.exit-fullscreen-button')?.click();
+      // The new bar has no exit button: it leaves fullscreen like Escape does
+      const exitButton = document.querySelector<HTMLElement>(
+        '.exit-fullscreen-button',
+      );
+      if (exitButton) exitButton.click();
+      else document.exitFullscreen().catch(() => {});
     } else {
       document.querySelector<HTMLElement>('.fullscreen-button')?.click();
     }
@@ -1528,11 +1940,9 @@ async function onApiLoaded() {
   );
 
   window.ipcRenderer.on('ytmd:toggle-mute', (_) => {
-    document
-      .querySelector<
-        HTMLElement & { onVolumeClick: () => void }
-      >('ytmusic-player-bar')
-      ?.onVolumeClick();
+    if (localPlayback) localPlayback.toggleMute();
+    else if (api?.isMuted()) api.unMute();
+    else api?.mute();
   });
 
   window.ipcRenderer.on('ytmd:get-queue', () => {
@@ -1770,17 +2180,31 @@ async function onApiLoaded() {
     if (!contentPage) return;
 
     const replayAnimations = () => {
-      const targets = contentPage.querySelectorAll<HTMLElement>(
-        'ytmusic-browse-response, ytmusic-section-list-renderer, ytmusic-shelf-renderer, ' +
-          'ytmusic-item-section-renderer, ytmusic-tab-renderer, ytmusic-library-landing-page, ' +
-          'ytmusic-grid-renderer, ytmusic-immersive-carousel-renderer',
+      const targets = new Set<Element>(
+        contentPage.querySelectorAll(
+          'ytmusic-browse-response, ytmusic-section-list-renderer, ytmusic-shelf-renderer, ' +
+            'ytmusic-item-section-renderer, ytmusic-tab-renderer, ytmusic-library-landing-page, ' +
+            'ytmusic-grid-renderer, ytmusic-immersive-carousel-renderer',
+        ),
       );
-      targets.forEach((el) => {
-        el.style.animation = 'none';
-        // Force reflow then re-apply
-        void el.offsetHeight;
-        el.style.animation = '';
-      });
+      // Restart the theme's fade-in through the Web Animations API, without
+      // the forced reflow per element that resetting the style needed. YTM's
+      // Web Animations polyfill replaces Element.getAnimations with one that
+      // misses CSS animations, so the list comes from the document. The
+      // fade-in fills both ways, so a finished one is still listed.
+      for (const animation of document.getAnimations()) {
+        if (
+          !(animation instanceof CSSAnimation) ||
+          animation.animationName !== 'ytmd-page-fade-in'
+        ) {
+          continue;
+        }
+        const target = (animation.effect as KeyframeEffect | null)?.target;
+        if (target && targets.has(target)) {
+          animation.cancel();
+          animation.play();
+        }
+      }
     };
 
     // Both observers funnel through a single debounced scheduler so a burst
