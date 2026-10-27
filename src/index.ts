@@ -315,19 +315,30 @@ const initHook = async (_win: BrowserWindow) => {
     if (newPluginConfigList === oldPluginConfigList) return;
 
     Object.entries(newPluginConfigList).forEach(([id, newPluginConfig]) => {
+      // Stored config can still hold plugins that no longer exist in this build.
+      if (!allPluginStubs[id]) return;
+
       const isEqual = deepEqual(oldPluginConfigList[id], newPluginConfig);
 
       if (!isEqual) {
-        const oldConfig = oldPluginConfigList[id] as PluginConfig;
+        // Merge defaults on both sides: a partial write (e.g. { hideVideo })
+        // stores no `enabled` key, and comparing that raw `undefined` with the
+        // merged default used to look like an enable event, which reloaded the
+        // plugin and popped the "restart required" dialog on every track change.
+        const defaults = allPluginStubs[id].config ?? { enabled: false };
+        const oldConfig = deepmerge(
+          defaults,
+          oldPluginConfigList[id] ?? {},
+        ) as PluginConfig;
         const config = deepmerge(
-          allPluginStubs[id].config ?? { enabled: false },
+          defaults,
           newPluginConfig ?? {},
         ) as PluginConfig;
 
         // Always target the current live window (it may have been recreated).
         const targetWindow = mainWindow;
 
-        if (config.enabled !== oldConfig?.enabled) {
+        if (config.enabled !== oldConfig.enabled) {
           if (config.enabled) {
             targetWindow?.webContents.send('plugin:enable', id);
             ipcMain.emit('plugin:enable', id);

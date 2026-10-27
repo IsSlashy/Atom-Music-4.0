@@ -1599,6 +1599,9 @@ const main = async () => {
     await forceUnloadRendererPlugin(id);
   });
   window.ipcRenderer.on('plugin:enable', async (_event, id: string) => {
+    // Starting an already running plugin again duplicates its buttons,
+    // listeners and stylesheets.
+    if (getLoadedRendererPlugin(id)) return;
     await forceLoadRendererPlugin(id);
     if (api) {
       const plugin = getLoadedRendererPlugin(id);

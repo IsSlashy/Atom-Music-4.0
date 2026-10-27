@@ -185,7 +185,7 @@ export default createPlugin({
               onChange={(e) => {
                 const target = e.target as HTMLInputElement;
 
-                setVideoState(target.checked);
+                setVideoState(target.checked, true);
               }}
               onClick={(e) => e.stopPropagation()}
               songButtonText={t('plugins.video-toggle.templates.button-song')}
@@ -213,7 +213,12 @@ export default createPlugin({
         }
       };
 
-      const setVideoState = (showVideo: boolean) => {
+      let showingVideo = !config.hideVideo;
+
+      // `persist` is true only for a user click on the switch. Automatic
+      // switches (song-only tracks, initial sync) must not overwrite the saved
+      // preference, otherwise one song-only track turns video mode off for good.
+      const setVideoState = (showVideo: boolean, persist = false) => {
         const checkbox = document.querySelector<HTMLInputElement>(
           '.video-switch-button-checkbox',
         ); // custom mode
@@ -221,20 +226,24 @@ export default createPlugin({
         // Don't hide the video while it's playing in PiP — that would cause a black screen.
         // Re-sync the checkbox so it doesn't stay in an inconsistent (song) state.
         if (!showVideo && document.pictureInPictureElement) {
-          if (checkbox) checkbox.checked = !this.config?.hideVideo;
+          if (checkbox) checkbox.checked = showingVideo;
           return;
         }
 
-        if (this.config) {
-          this.config.hideVideo = !showVideo;
-        }
-        // Persist only the modified field so the store merges it instead of
-        // overwriting the whole config with a possibly-stale frozen snapshot.
-        window.mainConfig.plugins.setOptions('video-toggle', {
-          hideVideo: !showVideo,
-        });
+        showingVideo = showVideo;
 
-        if (checkbox) checkbox.checked = !this.config?.hideVideo;
+        if (persist) {
+          if (this.config) {
+            this.config.hideVideo = !showVideo;
+          }
+          // Persist only the modified field so the store merges it instead of
+          // overwriting the whole config with a possibly-stale frozen snapshot.
+          window.mainConfig.plugins.setOptions('video-toggle', {
+            hideVideo: !showVideo,
+          });
+        }
+
+        if (checkbox) checkbox.checked = showVideo;
 
         if (player) {
           player.style.margin = showVideo ? '' : 'auto 0px';
