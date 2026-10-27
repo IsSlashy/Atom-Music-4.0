@@ -1,5 +1,3 @@
-import { singleton } from './decorators';
-
 import { LikeType, type GetState } from '@/types/datahost-get-state';
 
 import type { YoutubePlayer } from '@/types/youtube-player';
@@ -34,7 +32,7 @@ const registerUpdateSongInfoListener = () => {
 
 registerUpdateSongInfoListener();
 
-// Observers created inside the singleton setup helpers are tracked here so that
+// Observers created inside the setup helpers are tracked here so that
 // teardownSongInfo() can disconnect them.
 const trackedObservers = new Set<MutationObserver>();
 const trackObserver = (observer: MutationObserver) => {
@@ -42,47 +40,94 @@ const trackObserver = (observer: MutationObserver) => {
   return observer;
 };
 
+// Same for the DOM event listeners the setup helpers attach.
+const trackedListeners: {
+  target: EventTarget;
+  type: string;
+  listener: EventListener;
+  capture: boolean;
+}[] = [];
+const listen = (
+  target: EventTarget,
+  type: string,
+  listener: EventListener,
+  capture = false,
+) => {
+  target.addEventListener(type, listener, capture);
+  trackedListeners.push({ target, type, listener, capture });
+};
+
+// The main process asks for each setup helper ('ytmd:setup-*-listener'), once
+// per plugin that needs it. A helper counts as done only once it has attached:
+// one that finds no element (the new player bar lacks most of them) runs again
+// on the next request, and teardownSongInfo() resets them all.
+const completedSetups = new Set<string>();
+const setupOnce =
+  <Args extends unknown[]>(name: string, setup: (...args: Args) => boolean) =>
+  (...args: Args) => {
+    if (completedSetups.has(name)) return;
+    if (setup(...args)) completedSetups.add(name);
+  };
+
 // Used because 'loadeddata' or 'loadedmetadata' weren't firing on song start for some users (https://github.com/th-ch/youtube-music/issues/473)
 const srcChangedEvent = new CustomEvent('ytmd:src-changed');
 
-export const setupSeekedListener = singleton(() => {
-  document.querySelector('video')?.addEventListener('seeked', (v) => {
+export const setupSeekedListener = setupOnce('seeked', () => {
+  const video = document.querySelector('video');
+  if (!video) return false;
+
+  listen(video, 'seeked', (v) => {
     if (v.target instanceof HTMLVideoElement) {
       window.ipcRenderer.send('ytmd:seeked', v.target.currentTime);
     }
   });
+  return true;
 });
 
-export const setupTimeChangedListener = singleton(() => {
-  const progressObserver = trackObserver(new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-      const target = mutation.target as Node & { value: string };
-      const numberValue = Number(target.value);
-      window.ipcRenderer.send('ytmd:time-changed', numberValue);
-      songInfo.elapsedSeconds = numberValue;
-    }
-  }));
-  const progressBar = document.querySelector('#progress-bar');
-  if (progressBar) {
-    progressObserver.observe(progressBar, { attributeFilter: ['value'] });
-  }
+// Sends the position in whole seconds, so about once per second while playing.
+// It reads the <video> element, not #progress-bar, which the new player bar
+// does not have. 'timeupdate' does not bubble, so the listener catches it on
+// document in the capture phase, which also follows YTM replacing the element.
+// Local playback plays in an <audio> element and is left out.
+export const setupTimeChangedListener = setupOnce('time-changed', () => {
+  let lastSecond: number | undefined;
+  listen(
+    document,
+    'timeupdate',
+    (e) => {
+      if (!(e.target instanceof HTMLVideoElement)) return;
+      const seconds = Math.floor(e.target.currentTime);
+      if (seconds === lastSecond) return;
+      lastSecond = seconds;
+      window.ipcRenderer.send('ytmd:time-changed', seconds);
+      songInfo.elapsedSeconds = seconds;
+    },
+    true,
+  );
+  return true;
 });
 
-export const setupRepeatChangedListener = singleton(() => {
-  const repeatObserver = trackObserver(new MutationObserver((mutations) => {
-    // provided by YouTube Music
-    window.ipcRenderer.send(
-      'ytmd:repeat-changed',
-      (
-        mutations[0].target as Node & {
-          __dataHost: {
-            getState: () => GetState;
-          };
-        }
-      ).__dataHost.getState().queue.repeatMode,
-    );
-  }));
-  repeatObserver.observe(document.querySelector('#right-controls .repeat')!, {
+export const setupRepeatChangedListener = setupOnce('repeat-changed', () => {
+  // The new player bar has no repeat button.
+  const repeatButton = document.querySelector('#right-controls .repeat');
+  if (!repeatButton) return false;
+
+  const repeatObserver = trackObserver(
+    new MutationObserver((mutations) => {
+      // provided by YouTube Music
+      window.ipcRenderer.send(
+        'ytmd:repeat-changed',
+        (
+          mutations[0].target as Node & {
+            __dataHost: {
+              getState: () => GetState;
+            };
+          }
+        ).__dataHost.getState().queue.repeatMode,
+      );
+    }),
+  );
+  repeatObserver.observe(repeatButton, {
     attributeFilter: ['title'],
   });
 
@@ -98,6 +143,7 @@ export const setupRepeatChangedListener = singleton(() => {
       >('ytmusic-player-bar')
       ?.getState().queue.repeatMode,
   );
+  return true;
 });
 
 const mapLikeStatus = (status: string | null): LikeType =>
@@ -107,91 +153,109 @@ const mapLikeStatus = (status: string | null): LikeType =>
 
 const LIKE_STATUS_ATTRIBUTE = 'like-status';
 
-export const setupLikeChangedListener = singleton(() => {
-  const likeDislikeObserver = trackObserver(new MutationObserver((mutations) => {
-    window.ipcRenderer.send(
-      'ytmd:like-changed',
-      mapLikeStatus(
-        (mutations[0].target as HTMLElement)?.getAttribute?.(
-          LIKE_STATUS_ATTRIBUTE,
-        ),
-      ),
-    );
-  }));
+export const setupLikeChangedListener = setupOnce('like-changed', () => {
   const likeButtonRenderer = document.querySelector('#like-button-renderer');
-  if (likeButtonRenderer) {
-    likeDislikeObserver.observe(likeButtonRenderer, {
-      attributes: true,
-      attributeFilter: [LIKE_STATUS_ATTRIBUTE],
-    });
+  if (!likeButtonRenderer) return false;
 
-    // Emit the initial value as well; as it's persistent between launches.
-    window.ipcRenderer.send(
-      'ytmd:like-changed',
-      mapLikeStatus(likeButtonRenderer.getAttribute?.(LIKE_STATUS_ATTRIBUTE)),
-    );
-  }
+  const likeDislikeObserver = trackObserver(
+    new MutationObserver((mutations) => {
+      window.ipcRenderer.send(
+        'ytmd:like-changed',
+        mapLikeStatus(
+          (mutations[0].target as HTMLElement)?.getAttribute?.(
+            LIKE_STATUS_ATTRIBUTE,
+          ),
+        ),
+      );
+    }),
+  );
+  likeDislikeObserver.observe(likeButtonRenderer, {
+    attributes: true,
+    attributeFilter: [LIKE_STATUS_ATTRIBUTE],
+  });
+
+  // Emit the initial value as well; as it's persistent between launches.
+  window.ipcRenderer.send(
+    'ytmd:like-changed',
+    mapLikeStatus(likeButtonRenderer.getAttribute?.(LIKE_STATUS_ATTRIBUTE)),
+  );
+  return true;
 });
 
-export const setupVolumeChangedListener = singleton((api: YoutubePlayer) => {
-  document.querySelector('video')?.addEventListener('volumechange', () => {
+export const setupVolumeChangedListener = setupOnce(
+  'volume-changed',
+  (api: YoutubePlayer) => {
+    const video = document.querySelector('video');
+    if (video) {
+      listen(video, 'volumechange', () => {
+        window.ipcRenderer.send('ytmd:volume-changed', {
+          state: api.getVolume(),
+          isMuted: api.isMuted(),
+        });
+      });
+    }
+
+    // Emit the initial value as well; as it's persistent between launches.
     window.ipcRenderer.send('ytmd:volume-changed', {
       state: api.getVolume(),
       isMuted: api.isMuted(),
     });
-  });
-
-  // Emit the initial value as well; as it's persistent between launches.
-  window.ipcRenderer.send('ytmd:volume-changed', {
-    state: api.getVolume(),
-    isMuted: api.isMuted(),
-  });
-});
+    return video !== null;
+  },
+);
 
 // Consolidated observer for shuffle and fullscreen on ytmusic-player-bar
-export const setupShuffleChangedListener = singleton(() => {
+export const setupShuffleChangedListener = setupOnce('shuffle-changed', () => {
   const playerBar = document.querySelector('ytmusic-player-bar');
 
   if (!playerBar) {
     window.ipcRenderer.send('ytmd:shuffle-changed-supported', false);
-    return;
+    return false;
   }
 
   // Only observe shuffle if fullscreen isn't already set up (shared observer)
   setupPlayerBarObserver();
+  return true;
 });
 
-export const setupFullScreenChangedListener = singleton(() => {
-  const playerBar = document.querySelector('ytmusic-player-bar');
+export const setupFullScreenChangedListener = setupOnce(
+  'fullscreen-changed',
+  () => {
+    const playerBar = document.querySelector('ytmusic-player-bar');
 
-  if (!playerBar) {
-    window.ipcRenderer.send('ytmd:fullscreen-changed-supported', false);
-    return;
-  }
-
-  setupPlayerBarObserver();
-});
-
-const setupPlayerBarObserver = singleton(() => {
-  const playerBar = document.querySelector('ytmusic-player-bar');
-  if (!playerBar) return;
-
-  const observer = trackObserver(new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-      if (mutation.attributeName === 'shuffle-on') {
-        window.ipcRenderer.send(
-          'ytmd:shuffle-changed',
-          (playerBar.attributes.getNamedItem('shuffle-on') ?? null) !== null,
-        );
-      }
-      if (mutation.attributeName === 'player-fullscreened') {
-        window.ipcRenderer.send(
-          'ytmd:fullscreen-changed',
-          (playerBar.attributes.getNamedItem('player-fullscreened') ?? null) !== null,
-        );
-      }
+    if (!playerBar) {
+      window.ipcRenderer.send('ytmd:fullscreen-changed-supported', false);
+      return false;
     }
-  }));
+
+    setupPlayerBarObserver();
+    return true;
+  },
+);
+
+const setupPlayerBarObserver = setupOnce('player-bar', () => {
+  const playerBar = document.querySelector('ytmusic-player-bar');
+  if (!playerBar) return false;
+
+  const observer = trackObserver(
+    new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.attributeName === 'shuffle-on') {
+          window.ipcRenderer.send(
+            'ytmd:shuffle-changed',
+            (playerBar.attributes.getNamedItem('shuffle-on') ?? null) !== null,
+          );
+        }
+        if (mutation.attributeName === 'player-fullscreened') {
+          window.ipcRenderer.send(
+            'ytmd:fullscreen-changed',
+            (playerBar.attributes.getNamedItem('player-fullscreened') ??
+              null) !== null,
+          );
+        }
+      }
+    }),
+  );
 
   observer.observe(playerBar, {
     attributes: true,
@@ -199,29 +263,39 @@ const setupPlayerBarObserver = singleton(() => {
     childList: false,
     subtree: false,
   });
+  return true;
 });
 
-export const setupAutoPlayChangedListener = singleton(() => {
-  const autoplaySlider = document.querySelector<HTMLInputElement>(
-    '.autoplay > tp-yt-paper-toggle-button',
-  );
+export const setupAutoPlayChangedListener = setupOnce(
+  'autoplay-changed',
+  () => {
+    const autoplaySlider = document.querySelector<HTMLInputElement>(
+      '.autoplay > tp-yt-paper-toggle-button',
+    );
+    if (!autoplaySlider) return false;
 
-  const observer = trackObserver(new MutationObserver(() => {
-    window.ipcRenderer.send('ytmd:autoplay-changed');
-  }));
+    const observer = trackObserver(
+      new MutationObserver(() => {
+        window.ipcRenderer.send('ytmd:autoplay-changed');
+      }),
+    );
 
-  observer.observe(autoplaySlider!, {
-    attributes: true,
-    childList: false,
-    subtree: false,
-  });
-});
+    observer.observe(autoplaySlider, {
+      attributes: true,
+      childList: false,
+      subtree: false,
+    });
+    return true;
+  },
+);
 
 // CFG-05: track the per-channel IPC listeners registered by setupSongInfo so a
 // teardown can remove them, and guard against double registration on re-init.
 let songInfoInitialized = false;
-const setupListeners: { channel: string; listener: (...args: never[]) => void }[] =
-  [];
+const setupListeners: {
+  channel: string;
+  listener: (...args: never[]) => void;
+}[] = [];
 // Tracks the <video> element and listeners attached so they can be removed.
 let trackedVideo: HTMLVideoElement | null = null;
 const trackedVideoListeners: { type: string; listener: (e: Event) => void }[] =
@@ -418,6 +492,13 @@ export const teardownSongInfo = () => {
     observer.disconnect();
   }
   trackedObservers.clear();
+
+  // Detach the tracked DOM listeners and let every setup helper attach again.
+  for (const { target, type, listener, capture } of trackedListeners) {
+    target.removeEventListener(type, listener, capture);
+  }
+  trackedListeners.length = 0;
+  completedSetups.clear();
 
   // Remove the per-channel IPC listeners registered by setupSongInfo.
   for (const { channel, listener } of setupListeners) {
