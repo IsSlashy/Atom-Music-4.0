@@ -11,6 +11,8 @@ export default defineConfig<{ playerBar: PlayerBar }>({
   // Not `.test.ts`: the plain `playwright test` that CI runs must not pick
   // these up, they need YTM to answer and play.
   testMatch: '**/*.e2e.ts',
+  // Puts back the youtubemusic:// link a packaged build takes (see the file).
+  globalSetup: './global-setup.ts',
   timeout: 90_000,
   reporter: 'list',
   // The tests drive the real YTM: ads and network hiccups are outside our
