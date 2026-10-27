@@ -164,6 +164,20 @@
                 "hide": "Cacher",
                 "label": "Boutons « J'aime »"
               },
+              "player-bar": {
+                "auto": "Choix du site",
+                "classic": "Classique",
+                "dialog": {
+                  "button": {
+                    "later": "Plus tard",
+                    "reload": "Recharger maintenant"
+                  },
+                  "message": "La barre de lecture change au rechargement de la page.",
+                  "title": "Barre de lecture"
+                },
+                "label": "Barre de lecture",
+                "new": "Nouvelle"
+              },
               "remove-upgrade-button": "Supprimer le bouton de mise à niveau",
               "theme": {
                 "dialog": {

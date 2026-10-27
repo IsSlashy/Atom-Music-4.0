@@ -1,6 +1,7 @@
 import { type PreciseVolumePluginConfig } from './index';
 
 import { debounce } from '@/providers/decorators';
+import { queryControl } from '@/providers/ytm-selectors';
 
 import type { RendererContext } from '@/types/contexts';
 import type { YoutubePlayer } from '@/types/youtube-player';
@@ -168,7 +169,7 @@ export const onPlayerApiReady = async (
 
   /** Add onwheel event to play bar and also track if play bar is hovered */
   function setupPlaybar() {
-    const playerbar = $<HTMLElement>('ytmusic-player-bar');
+    const playerbar = queryControl('playerBar');
     if (!playerbar) return;
 
     const onWheel = (event: WheelEvent) => {
@@ -195,11 +196,38 @@ export const onPlayerApiReady = async (
       playerbar.removeEventListener('mouseleave', onMouseLeave);
     });
 
-    setupSliderObserver();
+    setupSliderObserver(playerbar);
   }
 
   /** Save volume + Update the volume tooltip when volume-slider is manually changed */
-  function setupSliderObserver() {
+  function setupSliderObserver(playerbar: HTMLElement) {
+    // The new player bar's slider is a range input whose value attribute does
+    // not follow the user, so listen to its events. They are caught on the
+    // bar, because YTM recreates the slider when the window gets narrow and
+    // wide again, and in the capture phase, because YTM stops them there.
+    const onSliderChange = (event: Event) => {
+      const slider = event.target;
+      if (
+        !(slider instanceof HTMLInputElement) ||
+        slider !== queryControl('volumeSlider')
+      ) {
+        return;
+      }
+      const value = Number(slider.value);
+      if (value === options.savedVolume) return;
+      setTooltip(value);
+      saveVolume(value);
+    };
+    playerbar.addEventListener('input', onSliderChange, true);
+    playerbar.addEventListener('change', onSliderChange, true);
+    cleanups.push(() => {
+      playerbar.removeEventListener('input', onSliderChange, true);
+      playerbar.removeEventListener('change', onSliderChange, true);
+    });
+
+    const slider = queryControl('volumeSlider');
+    if (!slider || slider instanceof HTMLInputElement) return;
+
     const sliderObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         if (mutation.target.nodeName === 'TP-YT-PAPER-SLIDER') {
@@ -218,9 +246,6 @@ export const onPlayerApiReady = async (
         }
       }
     });
-
-    const slider = $('#volume-slider');
-    if (!slider) return;
 
     // Observing only changes in 'value' of volume-slider
     sliderObserver.observe(slider, {
@@ -259,9 +284,21 @@ export const onPlayerApiReady = async (
 
   function updateVolumeSlider() {
     const savedVolume = options.savedVolume ?? 0;
+    const slider = queryControl('volumeSlider');
+    // The new player bar's slider does not follow the player's volume. Moving
+    // it the way a user would lets YTM update it (and apply the same volume).
+    if (slider instanceof HTMLInputElement) {
+      slider.value = String(savedVolume);
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      slider.dispatchEvent(new Event('change', { bubbles: true }));
+      return;
+    }
+
     // Slider value automatically rounds to multiples of 5
-    for (const slider of ['#volume-slider', '#expand-volume-slider']) {
-      const silderElement = $<HTMLInputElement>(slider);
+    for (const silderElement of [
+      slider,
+      $('#expand-volume-slider'),
+    ] as (HTMLInputElement | null)[]) {
       if (silderElement) {
         silderElement.value = String(
           savedVolume > 0 && savedVolume < 5 ? 5 : savedVolume,
@@ -282,15 +319,16 @@ export const onPlayerApiReady = async (
 
   // Set new volume as tooltip for volume slider and icon + expanding slider (appears when window size is small)
   const tooltipTargets = [
-    '#volume-slider',
     'tp-yt-paper-icon-button.volume',
     '#expand-volume-slider',
     '#expand-volume',
   ];
 
   function setTooltip(volume: number) {
-    for (const target of tooltipTargets) {
-      const tooltipTargetElement = $<HTMLElement>(target);
+    for (const tooltipTargetElement of [
+      queryControl('volumeSlider'),
+      ...tooltipTargets.map((target) => $<HTMLElement>(target)),
+    ]) {
       if (tooltipTargetElement) {
         tooltipTargetElement.title = `${volume}%`;
       }

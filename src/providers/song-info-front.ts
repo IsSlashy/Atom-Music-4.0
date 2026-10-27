@@ -7,6 +7,8 @@ import type {
   VideoDataChangeValue,
 } from '@/types/player-api-events';
 
+import { queryControl } from './ytm-selectors';
+
 import type { SongInfo } from './song-info';
 import type { VideoDataChanged } from '@/types/video-data-changed';
 
@@ -107,42 +109,46 @@ export const setupTimeChangedListener = setupOnce('time-changed', () => {
   return true;
 });
 
-export const setupRepeatChangedListener = setupOnce('repeat-changed', () => {
-  // The new player bar has no repeat button.
-  const repeatButton = document.querySelector('#right-controls .repeat');
-  if (!repeatButton) return false;
+// YTM's own state, which both player bars show.
+const getQueueState = () =>
+  document
+    .querySelector<HTMLElement & { getState?: () => GetState }>('ytmusic-app')
+    ?.getState?.().queue;
 
-  const repeatObserver = trackObserver(
-    new MutationObserver((mutations) => {
-      // provided by YouTube Music
-      window.ipcRenderer.send(
-        'ytmd:repeat-changed',
-        (
-          mutations[0].target as Node & {
-            __dataHost: {
-              getState: () => GetState;
-            };
-          }
-        ).__dataHost.getState().queue.repeatMode,
-      );
-    }),
-  );
-  repeatObserver.observe(repeatButton, {
-    attributeFilter: ['title'],
-  });
+export const isShuffleOn = () =>
+  getQueueState()?.shuffleEnabled ??
+  (queryControl('playerBar')?.hasAttribute('shuffle-on') ||
+    queryControl('shuffle')?.getAttribute('aria-pressed') === 'true');
+
+// Both player bars put `player-fullscreened` on the app layout.
+const getAppLayout = () => document.querySelector('ytmusic-app-layout');
+export const isFullscreen = () =>
+  getAppLayout()?.hasAttribute('player-fullscreened') ?? false;
+
+// The new bar recreates its buttons when the window gets narrow and wide
+// again, so the observers below watch the whole bar, which stays.
+export const setupRepeatChangedListener = setupOnce('repeat-changed', () => {
+  const playerBar = queryControl('playerBar');
+  if (!playerBar) return false;
 
   // Emit the initial value as well; as it's persistent between launches.
-  // provided by YouTube Music
-  window.ipcRenderer.send(
-    'ytmd:repeat-changed',
-    document
-      .querySelector<
-        HTMLElement & {
-          getState: () => GetState;
-        }
-      >('ytmusic-player-bar')
-      ?.getState().queue.repeatMode,
+  let repeatMode = getQueueState()?.repeatMode;
+  window.ipcRenderer.send('ytmd:repeat-changed', repeatMode);
+
+  // The repeat button's title names the mode, on both player bars
+  const repeatObserver = trackObserver(
+    new MutationObserver(() => {
+      const newRepeatMode = getQueueState()?.repeatMode;
+      if (newRepeatMode === repeatMode) return;
+      repeatMode = newRepeatMode;
+      window.ipcRenderer.send('ytmd:repeat-changed', repeatMode);
+    }),
   );
+  repeatObserver.observe(playerBar, {
+    attributes: true,
+    subtree: true,
+    attributeFilter: ['title'],
+  });
   return true;
 });
 
@@ -153,32 +159,41 @@ const mapLikeStatus = (status: string | null): LikeType =>
 
 const LIKE_STATUS_ATTRIBUTE = 'like-status';
 
-export const setupLikeChangedListener = setupOnce('like-changed', () => {
-  const likeButtonRenderer = document.querySelector('#like-button-renderer');
-  if (!likeButtonRenderer) return false;
+// The classic pair has a like-status attribute. In the new bar, the pressed
+// button tells.
+const readLikeStatus = (): LikeType => {
+  const likeControl = queryControl('like');
+  if (likeControl?.hasAttribute(LIKE_STATUS_ATTRIBUTE)) {
+    return mapLikeStatus(likeControl.getAttribute(LIKE_STATUS_ATTRIBUTE));
+  }
+  const isPressed = (key: 'likeButton' | 'dislikeButton') =>
+    queryControl(key)?.getAttribute('aria-pressed') === 'true';
+  if (isPressed('likeButton')) return LikeType.Like;
+  if (isPressed('dislikeButton')) return LikeType.Dislike;
+  return LikeType.Indifferent;
+};
 
+export const setupLikeChangedListener = setupOnce('like-changed', () => {
+  const playerBar = queryControl('playerBar');
+  if (!playerBar || !queryControl('like')) return false;
+
+  let likeStatus = readLikeStatus();
   const likeDislikeObserver = trackObserver(
-    new MutationObserver((mutations) => {
-      window.ipcRenderer.send(
-        'ytmd:like-changed',
-        mapLikeStatus(
-          (mutations[0].target as HTMLElement)?.getAttribute?.(
-            LIKE_STATUS_ATTRIBUTE,
-          ),
-        ),
-      );
+    new MutationObserver(() => {
+      const newLikeStatus = readLikeStatus();
+      if (newLikeStatus === likeStatus) return;
+      likeStatus = newLikeStatus;
+      window.ipcRenderer.send('ytmd:like-changed', likeStatus);
     }),
   );
-  likeDislikeObserver.observe(likeButtonRenderer, {
+  likeDislikeObserver.observe(playerBar, {
     attributes: true,
-    attributeFilter: [LIKE_STATUS_ATTRIBUTE],
+    subtree: true,
+    attributeFilter: [LIKE_STATUS_ATTRIBUTE, 'aria-pressed'],
   });
 
   // Emit the initial value as well; as it's persistent between launches.
-  window.ipcRenderer.send(
-    'ytmd:like-changed',
-    mapLikeStatus(likeButtonRenderer.getAttribute?.(LIKE_STATUS_ATTRIBUTE)),
-  );
+  window.ipcRenderer.send('ytmd:like-changed', likeStatus);
   return true;
 });
 
@@ -204,67 +219,55 @@ export const setupVolumeChangedListener = setupOnce(
   },
 );
 
-// Consolidated observer for shuffle and fullscreen on ytmusic-player-bar
 export const setupShuffleChangedListener = setupOnce('shuffle-changed', () => {
-  const playerBar = document.querySelector('ytmusic-player-bar');
+  const playerBar = queryControl('playerBar');
 
   if (!playerBar) {
     window.ipcRenderer.send('ytmd:shuffle-changed-supported', false);
     return false;
   }
 
-  // Only observe shuffle if fullscreen isn't already set up (shared observer)
-  setupPlayerBarObserver();
+  // The classic bar sets shuffle-on on itself, the new one aria-pressed on its
+  // shuffle button. Other buttons' aria-pressed land here too, so only a
+  // change of the state is sent.
+  let shuffleOn = isShuffleOn();
+  const observer = trackObserver(
+    new MutationObserver(() => {
+      const newShuffleOn = isShuffleOn();
+      if (newShuffleOn === shuffleOn) return;
+      shuffleOn = newShuffleOn;
+      window.ipcRenderer.send('ytmd:shuffle-changed', shuffleOn);
+    }),
+  );
+  observer.observe(playerBar, {
+    attributes: true,
+    subtree: true,
+    attributeFilter: ['shuffle-on', 'aria-pressed'],
+  });
   return true;
 });
 
 export const setupFullScreenChangedListener = setupOnce(
   'fullscreen-changed',
   () => {
-    const playerBar = document.querySelector('ytmusic-player-bar');
+    const appLayout = getAppLayout();
 
-    if (!playerBar) {
+    if (!appLayout) {
       window.ipcRenderer.send('ytmd:fullscreen-changed-supported', false);
       return false;
     }
 
-    setupPlayerBarObserver();
+    const observer = trackObserver(
+      new MutationObserver(() => {
+        window.ipcRenderer.send('ytmd:fullscreen-changed', isFullscreen());
+      }),
+    );
+    observer.observe(appLayout, {
+      attributeFilter: ['player-fullscreened'],
+    });
     return true;
   },
 );
-
-const setupPlayerBarObserver = setupOnce('player-bar', () => {
-  const playerBar = document.querySelector('ytmusic-player-bar');
-  if (!playerBar) return false;
-
-  const observer = trackObserver(
-    new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.attributeName === 'shuffle-on') {
-          window.ipcRenderer.send(
-            'ytmd:shuffle-changed',
-            (playerBar.attributes.getNamedItem('shuffle-on') ?? null) !== null,
-          );
-        }
-        if (mutation.attributeName === 'player-fullscreened') {
-          window.ipcRenderer.send(
-            'ytmd:fullscreen-changed',
-            (playerBar.attributes.getNamedItem('player-fullscreened') ??
-              null) !== null,
-          );
-        }
-      }
-    }),
-  );
-
-  observer.observe(playerBar, {
-    attributes: true,
-    attributeFilter: ['shuffle-on', 'player-fullscreened'],
-    childList: false,
-    subtree: false,
-  });
-  return true;
-});
 
 export const setupAutoPlayChangedListener = setupOnce(
   'autoplay-changed',

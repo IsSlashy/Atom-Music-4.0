@@ -296,6 +296,53 @@ export const mainMenuTemplate = async (
             },
             {
               label: t(
+                'main.menu.options.submenu.visual-tweaks.submenu.player-bar.label',
+              ),
+              submenu: (['auto', 'classic', 'new'] as const).map(
+                (playerBar): Electron.MenuItemConstructorOptions => ({
+                  label: t(
+                    `main.menu.options.submenu.visual-tweaks.submenu.player-bar.${playerBar}`,
+                  ),
+                  type: 'radio',
+                  // The preload treats any other value as 'auto'
+                  checked:
+                    playerBar === 'auto'
+                      ? !['classic', 'new'].includes(
+                          config.get('options.playerBar'),
+                        )
+                      : config.get('options.playerBar') === playerBar,
+                  async click() {
+                    if (config.get('options.playerBar') === playerBar) return;
+                    config.setMenuOption('options.playerBar', playerBar);
+                    if (config.get('options.restartOnConfigChanges')) return;
+
+                    // The preload pins the bar as the page loads
+                    const { response } = await dialog.showMessageBox(win, {
+                      type: 'question',
+                      defaultId: 0,
+                      cancelId: 1,
+                      title: t(
+                        'main.menu.options.submenu.visual-tweaks.submenu.player-bar.dialog.title',
+                      ),
+                      message: t(
+                        'main.menu.options.submenu.visual-tweaks.submenu.player-bar.dialog.message',
+                      ),
+                      buttons: [
+                        t(
+                          'main.menu.options.submenu.visual-tweaks.submenu.player-bar.dialog.button.reload',
+                        ),
+                        t(
+                          'main.menu.options.submenu.visual-tweaks.submenu.player-bar.dialog.button.later',
+                        ),
+                      ],
+                    });
+                    if (response === 0) win.webContents.reload();
+                  },
+                }),
+              ),
+            },
+            {
+              label: t(
                 'main.menu.options.submenu.visual-tweaks.submenu.theme.label',
               ),
               submenu: [

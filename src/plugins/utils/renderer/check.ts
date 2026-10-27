@@ -1,3 +1,5 @@
+import { queryControl } from '@/providers/ytm-selectors';
+
 export const isMusicOrVideoTrack = (menu: ParentNode = document) => {
   for (const menuSelector of menu.querySelectorAll<
     HTMLAnchorElement & {
@@ -59,10 +61,7 @@ export const isPlayerMenu = (menu?: HTMLElement | null) => {
       | null
   )?.ytEventForwardingBehavior?.forwarder_?.eventSink;
 
-  return (
-    !!eventSink &&
-    // Classic player bar, or the new one's "more" button
-    (eventSink.matches('ytmusic-menu-renderer.ytmusic-player-bar') ||
-      !!eventSink.closest('.ytMusicMiniPlayerMenuButton'))
-  );
+  // The player bar's menu button, in either player bar
+  const menuButton = queryControl('menuButton');
+  return !!eventSink && !!menuButton && menuButton.contains(eventSink);
 };
