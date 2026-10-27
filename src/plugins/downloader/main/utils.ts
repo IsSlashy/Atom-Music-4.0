@@ -1,8 +1,9 @@
 import { app, type BrowserWindow } from 'electron';
 import is from 'electron-is';
 
+// An empty folder setting means the default one, not the working directory
 export const getFolder = (customFolder?: string) =>
-  customFolder ?? app.getPath('downloads');
+  customFolder || app.getPath('downloads');
 
 export const sendFeedback = (win: BrowserWindow, message?: unknown) => {
   win.webContents.send('downloader-feedback', message);

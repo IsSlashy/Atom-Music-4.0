@@ -53,7 +53,7 @@ export const onMenu = async ({
             const result = dialog.showOpenDialogSync({
               properties: ['openDirectory', 'createDirectory'],
               defaultPath: getFolder(
-                config.downloadOnFinish?.folder ?? config.downloadFolder,
+                config.downloadOnFinish?.folder || config.downloadFolder,
               ),
             });
             if (result) {
