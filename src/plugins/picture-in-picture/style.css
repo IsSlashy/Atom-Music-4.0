@@ -55,7 +55,8 @@ ytmusic-app-layout.pip ytmusic-player-bar ytmusic-menu-renderer {
 }
 
 /* the same for YTM's new player bar. Its menu button stays: the new bar has no
-   exit full screen button, so the menu's entry is the way out of PiP */
+   exit full screen button, so where the window is wide enough to show the
+   button, the menu's entry is a way out of PiP besides the hotkey */
 ytmusic-app-layout.pip > .ytMusicMiniPlayerHost svg {
   filter: drop-shadow(2px 4px 6px black);
   color: white !important;

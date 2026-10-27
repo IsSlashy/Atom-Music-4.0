@@ -64,6 +64,10 @@ export const onPlayerApiReady = async (
 
       if (api.getVolume() !== options.savedVolume) {
         setVolume(options.savedVolume);
+      } else if (queryControl('volumeSlider') instanceof HTMLInputElement) {
+        // The new bar's slider starts at YTM's own stored volume, which can
+        // differ from the player's
+        updateVolumeSlider();
       }
     }
 
