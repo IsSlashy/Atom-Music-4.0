@@ -4,6 +4,7 @@ import {
   createResource,
   createSignal,
   Index,
+  on,
   onCleanup,
   onMount,
   Show,
@@ -17,8 +18,14 @@ import { PanelRenderer } from './PanelRenderer';
 import { IconButton } from './IconButton';
 import { WindowController } from './WindowController';
 import { useMenuData } from './hooks/useMenuData';
+import {
+  focusMenuItem,
+  MenuPanelContext,
+  type MenuPanelContextValue,
+} from './keyboard';
 
 import { cacheNoArgs } from '@/providers/decorators';
+import { waitForElement } from '@/utils/wait-for-element';
 
 import type { RendererContext } from '@/types/contexts';
 import type { InAppMenuConfig } from '../constants';
@@ -44,6 +51,11 @@ const titleStyle = cacheNoArgs(
     color: #f1f1f1;
     font-size: 12px;
     padding: 4px 4px 4px var(--offset-left, 4px);
+    /* keep the menus clear of the window controls overlay */
+    padding-right: calc(
+      100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 4px
+    );
+    overflow: hidden;
     background-color: var(--titlebar-background-color, #030303);
     user-select: none;
 
@@ -56,8 +68,7 @@ const titleStyle = cacheNoArgs(
       padding: 4px 4px 4px 74px;
     }
 
-    ytmusic-app:has(ytmusic-player[player-ui-state='FULLSCREEN'])
-      ~ &:not([data-show='true']) {
+    ytmusic-app.ytmd-fullscreen ~ &:not([data-show='true']) {
       transform: translateY(calc(-1 * var(--menu-bar-height, 32px)));
     }
 
@@ -99,6 +110,29 @@ const animationStyle = cacheNoArgs(() => ({
   `,
 }));
 
+// extra width the title bar needs before auto-collapsed menus come back, so
+// they do not flicker while the window is resized around the limit
+const AUTO_COLLAPSE_HYSTERESIS = 24;
+
+// Window Controls Overlay API, missing from lib.dom
+const windowControlsOverlay = (
+  navigator as Navigator & { windowControlsOverlay?: EventTarget }
+).windowControlsOverlay;
+
+// right edge of the last title bar item, from layout boxes so the enter
+// transition (translate and scale) does not skew it
+const getItemsRight = (titleBar: HTMLElement) =>
+  Math.max(
+    0,
+    ...Array.from(
+      titleBar.querySelectorAll<HTMLElement>(
+        ':scope > *, :scope > [role="menubar"] > *',
+      ),
+    )
+      .filter((it) => getComputedStyle(it).position !== 'absolute')
+      .map((it) => it.offsetLeft + it.offsetWidth),
+  );
+
 export type TitleBarProps = {
   ipc: RendererContext<InAppMenuConfig>['ipc'];
   isMacOS?: boolean;
@@ -107,10 +141,19 @@ export type TitleBarProps = {
 };
 export const TitleBar = (props: TitleBarProps) => {
   const [collapsed, setCollapsed] = createSignal(props.initialCollapsed);
+  // set when the menus do not fit next to the window controls, independent
+  // of the user's choice (options.hideMenu, hamburger button)
+  const [autoCollapsed, setAutoCollapsed] = createSignal(false);
   const [ignoreTransition, setIgnoreTransition] = createSignal(false);
   const [openTarget, setOpenTarget] = createSignal<HTMLElement | null>(null);
   const [menu, setMenu] = createSignal<Menu | null>(null);
   const [mouseY, setMouseY] = createSignal(0);
+  // roving tabindex: only one menu bar button is a tab stop
+  const [focusIndex, setFocusIndex] = createSignal(0);
+  const [menuToggle, setMenuToggle] = createSignal<HTMLElement | null>(null);
+  const [overflowPanel, setOverflowPanel] = createSignal<HTMLElement | null>(
+    null,
+  );
 
   const [data, { refetch }] = createResource(
     async () => (await props.ipc.invoke('get-menu')) as Promise<Menu | null>,
@@ -136,6 +179,134 @@ export const TitleBar = (props: TitleBarProps) => {
   };
 
   const { handleItemClick } = useMenuData(menu, setMenu);
+
+  // keyboard context of a top-level panel: closing it gives the focus back to
+  // the button that opened it
+  const createPanelContext = (
+    anchor: () => HTMLElement | null,
+  ): MenuPanelContextValue => {
+    const close = () => {
+      setOpenTarget(null);
+      anchor()?.focus();
+    };
+    return { isSubmenu: false, close, closeAll: close };
+  };
+
+  let titleBar: HTMLElement | undefined;
+  let resizeObserver: ResizeObserver | undefined;
+  // width the title bar needed when the menus were last shown
+  let requiredWidth = 0;
+  let autoCollapseFrame = 0;
+  let observeItemsPending = false;
+
+  const updateAutoCollapse = () => {
+    if (!titleBar) return;
+
+    if (autoCollapsed()) {
+      if (titleBar.clientWidth >= requiredWidth + AUTO_COLLAPSE_HYSTERESIS) {
+        setOpenTarget(null);
+        setAutoCollapsed(false);
+      }
+      return;
+    }
+
+    // the menus are hidden by the user, there is nothing to measure
+    if (collapsed()) return;
+
+    const paddingRight = parseFloat(getComputedStyle(titleBar).paddingRight);
+    const width = getItemsRight(titleBar) + (paddingRight || 0);
+    if (width > titleBar.clientWidth) {
+      requiredWidth = width;
+      setOpenTarget(null);
+      setAutoCollapsed(true);
+    }
+  };
+
+  const scheduleAutoCollapse = (observeItems = false) => {
+    observeItemsPending ||= observeItems;
+    cancelAnimationFrame(autoCollapseFrame);
+    autoCollapseFrame = requestAnimationFrame(() => {
+      if (observeItemsPending && titleBar && resizeObserver) {
+        // a label can change width (language, font loading) while the title
+        // bar keeps its size
+        resizeObserver.disconnect();
+        resizeObserver.observe(titleBar);
+        titleBar
+          .querySelectorAll('li[data-index]')
+          .forEach((it) => resizeObserver?.observe(it));
+      }
+      observeItemsPending = false;
+      updateAutoCollapse();
+    });
+  };
+  const handleGeometryChange = () => scheduleAutoCollapse();
+
+  // with the menus collapsed, the hamburger button lists them in a panel
+  const toggleOverflowMenu = (focusFirstItem: boolean) => {
+    const toggle = menuToggle();
+    if (openTarget() === toggle) {
+      setOpenTarget(null);
+      return;
+    }
+
+    setOpenTarget(toggle);
+    if (focusFirstItem) {
+      requestAnimationFrame(() => focusMenuItem(overflowPanel(), 'first'));
+    }
+  };
+
+  const handleMenuToggle = (fromKeyboard: boolean) => {
+    if (autoCollapsed()) {
+      toggleOverflowMenu(fromKeyboard);
+      return;
+    }
+
+    setCollapsed(!collapsed());
+    // shown again in a title bar too narrow for them: use the panel instead
+    if (!collapsed()) {
+      updateAutoCollapse();
+      if (autoCollapsed()) toggleOverflowMenu(fromKeyboard);
+    }
+  };
+
+  // ytmusic-app gets the ytmd-fullscreen class while the player is
+  // fullscreen, so the title bar hides without a :has() rule that every style
+  // recalculation of the app has to match.
+  // player-ui-state is read from ytmusic-app-layout, which mirrors the one of
+  // ytmusic-player: YTM replaces ytmusic-player (and its parents) whenever the
+  // layout switches to or from mweb, the layout itself stays
+  let appLayout: Element | null = null;
+  const syncFullscreen = () => {
+    document
+      .querySelector('ytmusic-app')
+      ?.classList.toggle(
+        'ytmd-fullscreen',
+        appLayout?.getAttribute('player-ui-state') === 'FULLSCREEN',
+      );
+  };
+  const fullscreenObserver = new MutationObserver(syncFullscreen);
+  const layoutParentObserver = new MutationObserver(() => attachLayout());
+  // observes the layout, and its parent to reattach if YTM ever replaces it
+  const attachLayout = () => {
+    const current = document.querySelector('ytmusic-app-layout');
+    if (current !== appLayout) {
+      fullscreenObserver.disconnect();
+      layoutParentObserver.disconnect();
+      appLayout = current;
+      if (appLayout) {
+        fullscreenObserver.observe(appLayout, {
+          attributes: true,
+          attributeFilter: ['player-ui-state'],
+        });
+      }
+      if (appLayout?.parentElement) {
+        layoutParentObserver.observe(appLayout.parentElement, {
+          childList: true,
+        });
+      }
+    }
+    syncFullscreen();
+  };
 
   const listener = (e: MouseEvent) => {
     setMouseY(e.clientY);
@@ -192,6 +363,15 @@ export const TitleBar = (props: TitleBarProps) => {
     window.addEventListener('mousemove', listener);
     ytmusicAppLayout = document.querySelector<HTMLElement>('#layout');
     ytmusicAppLayout?.addEventListener('scroll', scrollListener);
+
+    resizeObserver = new ResizeObserver(() => scheduleAutoCollapse());
+    scheduleAutoCollapse(true);
+    windowControlsOverlay?.addEventListener(
+      'geometrychange',
+      handleGeometryChange,
+    );
+
+    waitForElement('ytmusic-app-layout').then(attachLayout);
   });
 
   createEffect(() => {
@@ -200,10 +380,23 @@ export const TitleBar = (props: TitleBarProps) => {
     }
   });
 
+  // measure again whenever the menu bar buttons are rendered or removed
+  createEffect(
+    on([menu, collapsed, autoCollapsed], () => scheduleAutoCollapse(true)),
+  );
+
   onCleanup(() => {
     window.removeEventListener('mousemove', listener);
     document.body.removeEventListener('click', clickListener);
     ytmusicAppLayout?.removeEventListener('scroll', scrollListener);
+    cancelAnimationFrame(autoCollapseFrame);
+    resizeObserver?.disconnect();
+    windowControlsOverlay?.removeEventListener(
+      'geometrychange',
+      handleGeometryChange,
+    );
+    fullscreenObserver.disconnect();
+    layoutParentObserver.disconnect();
   });
 
   return (
@@ -213,16 +406,17 @@ export const TitleBar = (props: TitleBarProps) => {
       data-show={mouseY() < 32}
       data-ytmd-main-panel={true}
       id={'ytmd-title-bar-main-panel'}
-      tabIndex={0}
       onDblClick={(e) => {
         // double-clicking the empty (drag) area of the titlebar toggles maximize
         if (props.enableController && e.target === e.currentTarget) {
-          void handleToggleMaximize();
+          handleToggleMaximize();
         }
       }}
       onKeyDown={(e: KeyboardEvent) => {
+        // with the menus collapsed, Escape and Tab still close the panel
+        // opened from the hamburger button
         const items = menu()?.items;
-        if (!items || collapsed()) return;
+        if (!items) return;
 
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -230,20 +424,32 @@ export const TitleBar = (props: TitleBarProps) => {
           return;
         }
 
-        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-          const currentTarget = openTarget();
-          if (!currentTarget) return;
+        // Tab closes the open menu, the focus moves on as usual
+        if (e.key === 'Tab') {
+          setOpenTarget(null);
+          return;
+        }
 
-          e.preventDefault();
+        if (
+          e.key === 'ArrowLeft' ||
+          e.key === 'ArrowRight' ||
+          e.key === 'Home' ||
+          e.key === 'End'
+        ) {
           const nav = e.currentTarget as HTMLElement;
           const buttons = Array.from(
             nav.querySelectorAll<HTMLElement>('li[data-index]'),
           );
-          const currentIndex = buttons.indexOf(currentTarget);
+          const currentIndex = buttons.indexOf(e.target as HTMLElement);
           if (currentIndex === -1) return;
 
+          e.preventDefault();
           let nextIndex: number;
-          if (e.key === 'ArrowLeft') {
+          if (e.key === 'Home') {
+            nextIndex = 0;
+          } else if (e.key === 'End') {
+            nextIndex = buttons.length - 1;
+          } else if (e.key === 'ArrowLeft') {
             nextIndex =
               currentIndex > 0 ? currentIndex - 1 : buttons.length - 1;
           } else {
@@ -253,14 +459,28 @@ export const TitleBar = (props: TitleBarProps) => {
 
           const nextButton = buttons[nextIndex];
           if (nextButton) {
-            setOpenTarget(nextButton);
+            // an open menu follows the focus
+            if (openTarget()) setOpenTarget(nextButton);
             nextButton.focus();
           }
         }
       }}
+      ref={(el) => (titleBar = el)}
     >
       <IconButton
-        onClick={() => setCollapsed(!collapsed())}
+        aria-expanded={
+          autoCollapsed() ? openTarget() === menuToggle() : undefined
+        }
+        aria-haspopup={autoCollapsed() ? 'menu' : undefined}
+        onClick={(e) => handleMenuToggle(e.detail === 0)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' && autoCollapsed()) {
+            e.preventDefault();
+            if (openTarget() !== menuToggle()) toggleOverflowMenu(true);
+            else focusMenuItem(overflowPanel(), 'first');
+          }
+        }}
+        ref={setMenuToggle}
         style={{
           'border-top-left-radius': '4px',
         }}
@@ -272,92 +492,132 @@ export const TitleBar = (props: TitleBarProps) => {
           />
         </svg>
       </IconButton>
-      <TransitionGroup
-        enterActiveClass={
-          ignoreTransition()
-            ? animationStyle().fake
-            : animationStyle().enterActive
-        }
-        enterClass={
-          ignoreTransition()
-            ? animationStyle().fakeTarget
-            : animationStyle().enter
-        }
-        exitActiveClass={
-          ignoreTransition()
-            ? animationStyle().fake
-            : animationStyle().exitActive
-        }
-        exitToClass={
-          ignoreTransition()
-            ? animationStyle().fakeTarget
-            : animationStyle().exitTo
-        }
-        onAfterEnter={(element) => {
-          (element as HTMLElement).style.removeProperty('transition-delay');
-        }}
-        onBeforeEnter={(element) => {
-          if (ignoreTransition()) return;
-          const index = Number(element.getAttribute('data-index') ?? 0);
-
-          (element as HTMLElement).style.setProperty(
-            'transition-delay',
-            `${index * 0.025}s`,
-          );
-        }}
-        onBeforeExit={(element) => {
-          if (ignoreTransition()) return;
-          const index = Number(element.getAttribute('data-index') ?? 0);
-          const length = Number(element.getAttribute('data-length') ?? 1);
-
-          (element as HTMLElement).style.setProperty(
-            'transition-delay',
-            `${length * 0.025 - index * 0.025}s`,
-          );
-        }}
+      <Panel
+        anchor={menuToggle()}
+        offset={{ mainAxis: 8 }}
+        open={autoCollapsed() && openTarget() === menuToggle()}
+        placement={'bottom-start'}
+        ref={setOverflowPanel}
       >
-        <Show when={!collapsed()}>
-          <Index each={menu()?.items}>
-            {(item, index) => {
-              const [anchor, setAnchor] = createSignal<HTMLElement | null>(
-                null,
-              );
+        <MenuPanelContext.Provider value={createPanelContext(menuToggle)}>
+          <PanelRenderer
+            items={menu()?.items ?? []}
+            onClick={handleItemClick}
+          />
+        </MenuPanelContext.Provider>
+      </Panel>
+      <div role={'menubar'} style={{ display: 'contents' }}>
+        <TransitionGroup
+          enterActiveClass={
+            ignoreTransition()
+              ? animationStyle().fake
+              : animationStyle().enterActive
+          }
+          enterClass={
+            ignoreTransition()
+              ? animationStyle().fakeTarget
+              : animationStyle().enter
+          }
+          exitActiveClass={
+            ignoreTransition()
+              ? animationStyle().fake
+              : animationStyle().exitActive
+          }
+          exitToClass={
+            ignoreTransition()
+              ? animationStyle().fakeTarget
+              : animationStyle().exitTo
+          }
+          onAfterEnter={(element) => {
+            (element as HTMLElement).style.removeProperty('transition-delay');
+          }}
+          onBeforeEnter={(element) => {
+            if (ignoreTransition()) return;
+            const index = Number(element.getAttribute('data-index') ?? 0);
 
-              const handleClick = () => {
-                if (openTarget() === anchor()) {
-                  setOpenTarget(null);
-                } else {
-                  setOpenTarget(anchor());
-                }
-              };
+            (element as HTMLElement).style.setProperty(
+              'transition-delay',
+              `${index * 0.025}s`,
+            );
+          }}
+          onBeforeExit={(element) => {
+            if (ignoreTransition()) return;
+            const index = Number(element.getAttribute('data-index') ?? 0);
+            const length = Number(element.getAttribute('data-length') ?? 1);
 
-              return (
-                <>
-                  <MenuButton
-                    data-index={index}
-                    data-length={menu()?.items.length}
-                    onClick={handleClick}
-                    ref={setAnchor}
-                    selected={openTarget() === anchor()}
-                    text={item().label}
-                  />
-                  <Panel
-                    anchor={anchor()}
-                    offset={{ mainAxis: 8 }}
-                    open={openTarget() === anchor()}
-                    placement={'bottom-start'}
-                  >
-                    <PanelRenderer
-                      items={item().submenu?.items ?? []}
-                      onClick={handleItemClick}
+            (element as HTMLElement).style.setProperty(
+              'transition-delay',
+              `${length * 0.025 - index * 0.025}s`,
+            );
+          }}
+        >
+          <Show when={!collapsed() && !autoCollapsed()}>
+            <Index each={menu()?.items}>
+              {(item, index) => {
+                const [anchor, setAnchor] = createSignal<HTMLElement | null>(
+                  null,
+                );
+                const [panel, setPanel] = createSignal<HTMLElement | null>(
+                  null,
+                );
+
+                const handleClick = () => {
+                  if (openTarget() === anchor()) {
+                    setOpenTarget(null);
+                  } else {
+                    setOpenTarget(anchor());
+                  }
+                };
+
+                return (
+                  <>
+                    <MenuButton
+                      data-index={index}
+                      data-length={menu()?.items.length}
+                      onClick={handleClick}
+                      onFocus={() => setFocusIndex(index)}
+                      onKeyDown={(e: KeyboardEvent) => {
+                        // ArrowDown and ArrowUp open the menu and move the
+                        // focus to its first or last item
+                        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setOpenTarget(anchor());
+                          const position =
+                            e.key === 'ArrowDown' ? 'first' : 'last';
+                          requestAnimationFrame(() =>
+                            focusMenuItem(panel(), position),
+                          );
+                        }
+                      }}
+                      ref={setAnchor}
+                      selected={openTarget() === anchor()}
+                      tabIndex={focusIndex() === index ? 0 : -1}
+                      text={item().label}
                     />
-                  </Panel>
-                </>
-              );
-            }}
-          </Index>
-        </Show>
-      </TransitionGroup>
+                    <Panel
+                      anchor={anchor()}
+                      aria-label={item().label}
+                      offset={{ mainAxis: 8 }}
+                      open={openTarget() === anchor()}
+                      placement={'bottom-start'}
+                      ref={setPanel}
+                    >
+                      <MenuPanelContext.Provider
+                        value={createPanelContext(anchor)}
+                      >
+                        <PanelRenderer
+                          items={item().submenu?.items ?? []}
+                          onClick={handleItemClick}
+                        />
+                      </MenuPanelContext.Provider>
+                    </Panel>
+                  </>
+                );
+              }}
+            </Index>
+          </Show>
+        </TransitionGroup>
+      </div>
       <Show when={props.enableController}>
         <div style={{ flex: 1 }} />
         <WindowController
