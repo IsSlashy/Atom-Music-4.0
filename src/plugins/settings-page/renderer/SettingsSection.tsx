@@ -3,6 +3,7 @@ import { css } from 'solid-styled-components';
 
 import { SettingControl } from './SettingControl';
 import { cacheNoArgs } from '@/providers/decorators';
+import { t } from '@/i18n';
 
 import type { PluginMeta } from '../types';
 
@@ -164,24 +165,24 @@ export const SettingsSection = (props: SettingsSectionProps) => {
         onClick={() => hasConfig() && setExpanded(!expanded())}
       >
         <div class={infoStyle()}>
-          <div style={{ display: 'flex', 'align-items': 'center' }}>
+          <div style={{ 'display': 'flex', 'align-items': 'center' }}>
             <span class={nameStyle()}>{props.plugin.name}</span>
             <Show when={props.plugin.restartNeeded}>
-              <span class={restartBadgeStyle()}>restart</span>
+              <span class={restartBadgeStyle()}>
+                {t('plugins.settings-page.templates.restart')}
+              </span>
             </Show>
             <Show when={hasConfig()}>
               <svg
-                width="16"
                 height="16"
-                viewBox="0 0 24 24"
                 style={{
                   'margin-left': '8px',
                   'color': 'rgba(255,255,255,0.4)',
-                  'transform': expanded()
-                    ? 'rotate(180deg)'
-                    : 'rotate(0deg)',
+                  'transform': expanded() ? 'rotate(180deg)' : 'rotate(0deg)',
                   'transition': 'transform 200ms',
                 }}
+                viewBox="0 0 24 24"
+                width="16"
               >
                 <path d="M7 10l5 5 5-5z" fill="currentColor" />
               </svg>
@@ -191,14 +192,11 @@ export const SettingsSection = (props: SettingsSectionProps) => {
             <div class={descStyle()}>{props.plugin.description}</div>
           </Show>
         </div>
-        <label
-          class={toggleStyle()}
-          onClick={(e) => e.stopPropagation()}
-        >
+        <label class={toggleStyle()} onClick={(e) => e.stopPropagation()}>
           <input
-            type="checkbox"
             checked={isEnabled()}
             onChange={toggleEnabled}
+            type="checkbox"
           />
           <span class="slider" />
         </label>
@@ -208,10 +206,10 @@ export const SettingsSection = (props: SettingsSectionProps) => {
           <For each={configKeys()}>
             {(key) => (
               <SettingControl
-                label={key}
-                value={config()[key]}
                 defaultValue={props.plugin.defaultConfig[key]}
+                label={key}
                 onChange={(val) => updateConfig(key, val)}
+                value={config()[key]}
               />
             )}
           </For>

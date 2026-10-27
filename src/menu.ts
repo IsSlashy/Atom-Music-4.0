@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import is from 'electron-is';
 import {
   app,
@@ -128,7 +130,7 @@ export const mainMenuTemplate = async (
 
         return aPluginLabel.localeCompare(bPluginLabel);
       })
-      .map((id) => {
+      .map(async (id) => {
         const predefinedTemplate = menuResult.find((it) => it[0] === id);
         if (predefinedTemplate) return predefinedTemplate[1];
 
@@ -162,7 +164,7 @@ export const mainMenuTemplate = async (
       label: t('main.menu.options.label'),
       submenu: [
         {
-          label: 'Settings',
+          label: t('main.menu.options.submenu.settings'),
           accelerator: 'CmdOrCtrl+,',
           click() {
             win.webContents.send('open-settings');
@@ -348,11 +350,22 @@ export const mainMenuTemplate = async (
                   ),
                   type: 'normal',
                   async click() {
-                    const { filePaths } = await dialog.showOpenDialog({
-                      filters: [{ name: 'CSS Files', extensions: ['css'] }],
-                      properties: ['openFile', 'multiSelections'],
-                    });
-                    if (filePaths) {
+                    // From Electron 43 the dialog opens in Downloads and no
+                    // longer remembers the last folder, so start in the
+                    // folder of the themes imported last time.
+                    const [lastTheme] = config.get('options.themes') ?? [];
+                    const { canceled, filePaths } = await dialog.showOpenDialog(
+                      {
+                        defaultPath: lastTheme
+                          ? path.dirname(lastTheme)
+                          : undefined,
+                        filters: [{ name: 'CSS Files', extensions: ['css'] }],
+                        properties: ['openFile', 'multiSelections'],
+                      },
+                    );
+                    // A cancelled dialog returns no paths and must not clear
+                    // the themes already set.
+                    if (!canceled && filePaths.length > 0) {
                       config.set('options.themes', filePaths);
                       innerRefreshMenu();
                     }
@@ -671,7 +684,11 @@ export const mainMenuTemplate = async (
           label: t('main.menu.navigation.submenu.copy-current-url'),
           click() {
             const currentURL = win.webContents.getURL();
-            clipboard.writeText(currentURL);
+            // writeText returns a Promise from Electron 44 and nothing
+            // before it; Promise.resolve handles both.
+            Promise.resolve(clipboard.writeText(currentURL)).catch(
+              console.error,
+            );
           },
         },
         {
@@ -686,12 +703,14 @@ export const mainMenuTemplate = async (
     },
     {
       label: t('main.menu.about'),
-      submenu: [{
-        label: t('main.menu.about'),
-        click: () => {
-          win.webContents.send('ytmd:show-about');
+      submenu: [
+        {
+          label: t('main.menu.about'),
+          click: () => {
+            win.webContents.send('ytmd:show-about');
+          },
         },
-      }],
+      ],
     },
   ];
 };

@@ -1,9 +1,10 @@
 import { createPlugin } from '@/utils';
+import { t } from '@/i18n';
 import { onRendererLoad } from './renderer';
 
 export default createPlugin({
-  name: () => 'Settings',
-  description: () => 'Centralized settings page for all plugins',
+  name: () => t('plugins.settings-page.name'),
+  description: () => t('plugins.settings-page.description'),
   restartNeeded: false,
   config: {
     enabled: true,
